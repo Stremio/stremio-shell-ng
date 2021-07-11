@@ -17,10 +17,14 @@ fn main() {
     nwg::init().unwrap();
 
     let mut window = Window::default();
-
+    let dimensions = (1600, 900);
+    let [total_width, total_height] = [nwg::Monitor::width(), nwg::Monitor::height()];
+    let x = (total_width-dimensions.0)/2;
+    let y = (total_height-dimensions.1)/2;
     Window::builder()
         .title("Stremio")
-        .size((1600, 900))
+        .size(dimensions)
+        .position((x, y))
         .build(&mut window)
         .unwrap();
 
@@ -34,8 +38,9 @@ fn main() {
     //mpv_builder.set_option("vo", "gpu").expect("unable to set vo");
     // win, opengl: works but least performancy, 10-15% CPU
     // winvk, vulkan: works as good as d3d11
-    // d3d11, d1d11: works great
+    // d3d11, d3d11: works great
     // dxinterop, auto: works, slightly more cpu use than d3d11
+    // angle, gpu-api: seems to have almost no effect on performance
     // default (auto) seems to be d3d11 (vo/gpu/d3d11)
     /*
     mpv_builder.set_option("gpu-context", "angle")
