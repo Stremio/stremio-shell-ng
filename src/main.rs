@@ -1,7 +1,7 @@
 use native_windows_gui::{self as nwg, NativeUi};
 
 mod stremio_app;
-use crate::stremio_app::{stremio_server::StremioServer, StremioApp};
+use crate::stremio_app::{stremio_server::StremioServer, MainWindow};
 
 fn main() {
     // native-windows-gui has some basic high DPI support with the high-dpi
@@ -17,7 +17,7 @@ fn main() {
     let streaming_server = StremioServer::new();
 
     nwg::init().expect("Failed to init Native Windows GUI");
-    let _app = StremioApp::build_ui(Default::default()).expect("Failed to build UI");
+    let _app = MainWindow::build_ui(Default::default()).expect("Failed to build UI");
     nwg::dispatch_thread_events();
     streaming_server.try_kill();
 }

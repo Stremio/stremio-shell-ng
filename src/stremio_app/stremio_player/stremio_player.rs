@@ -1,8 +1,52 @@
 use native_windows_gui::{self as nwg, PartialUi};
+use std::cell::RefCell;
+
+pub trait PlayerInterface {
+    fn play(&self, media_path: &str);
+    fn pause(&self, paused: bool);
+    fn seek(&self, time: f64);
+    fn speed(&self, factor: f64);
+    fn stop(&self);
+}
 
 #[derive(Default)]
 pub struct Player {
-    mpv: Option<mpv::MpvHandler>,
+    mpv: RefCell<Option<mpv::MpvHandler>>,
+}
+
+impl Player {
+    fn command(&self, args: &[&str]) {
+        let mut mpv = self.mpv.borrow_mut();
+        let mpv = mpv.as_mut().expect("Failed to create MPV");
+        if let Err(e) = mpv.command(args) {
+            eprintln!("Failed to execute command {:?} - {:?}", args, e);
+        }
+    }
+    fn set_prop<T: mpv::MpvFormat>(&self, prop: &str, val: T) {
+        let mut mpv = self.mpv.borrow_mut();
+        let mpv = mpv.as_mut().expect("Failed to create MPV");
+        if let Err(e) = mpv.set_property(prop, val) {
+            eprintln!("Failed to set property {} - {:?}", prop, e);
+        }
+    }
+}
+
+impl PlayerInterface for Player {
+    fn play(&self, media_path: &str) {
+        self.command(&["loadfile", media_path]);
+    }
+    fn pause(&self, paused: bool) {
+        self.set_prop("pause", paused);
+    }
+    fn seek(&self, pos: f64) {
+        self.set_prop("time-pos", pos);
+    }
+    fn speed(&self, factor: f64) {
+        self.set_prop("speed", factor);
+    }
+    fn stop(&self) {
+        self.command(&["stop"]);
+    }
 }
 
 impl PartialUi for Player {
@@ -10,10 +54,18 @@ impl PartialUi for Player {
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
+
         let mut mpv_builder =
             mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
         mpv_builder
-            .set_option("wid", parent.unwrap().into().hwnd().unwrap() as i64)
+            .set_option(
+                "wid",
+                parent
+                    .expect("No parent window")
+                    .into()
+                    .hwnd()
+                    .expect("Cannot obtain window handle") as i64,
+            )
             .expect("failed setting wid");
         // mpv_builder.set_option("vo", "gpu").expect("unable to set vo");
         // win, opengl: works but least performancy, 10-15% CPU
@@ -35,14 +87,7 @@ impl PartialUi for Player {
             .set_option("msg-level", "all=v")
             .expect("failed setting msg-level");
         //mpv_builder.set_option("quiet", "yes").expect("failed setting msg-level");
-        data.mpv = mpv_builder.build().ok();
-        let mpv = data.mpv.as_mut().expect("Failed to create MPV");
-        // let video_path = "/home/ivo/storage/bbb_sunflower_1080p_30fps_normal.mp4";
-        let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-        mpv.command(&["loadfile", video_path])
-            .expect("Error loading file");
-        // mpv.command(&["stop"]).expect("Error stopping");
-
+        data.mpv = RefCell::new(mpv_builder.build().ok());
         Ok(())
     }
 }
