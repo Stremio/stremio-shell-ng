@@ -2,7 +2,7 @@ use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use std::cmp;
 
-use crate::stremio_app::stremio_player::{Player, PlayerInterface};
+use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
 
 #[derive(Default, NwgUi)]
@@ -28,10 +28,11 @@ impl MainWindow {
         self.window.set_position(x, y);
         // let video_path = "/home/ivo/storage/bbb_sunflower_1080p_30fps_normal.mp4";
         let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-        self.player.play(video_path);
-        // self.player.seek(120.0);
-        self.player.speed(2.0);
-        // self.player.pause(true);
+        self.player.command(&["loadfile", video_path]);
+        // self.player.set_prop("time-pos", 120.0);
+        self.player.set_prop("speed", 2.0);
+        // self.player.set_prop("pause", true);
+        self.player.command(&["stop"]);
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();

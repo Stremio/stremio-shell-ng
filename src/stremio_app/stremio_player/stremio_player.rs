@@ -1,28 +1,20 @@
 use native_windows_gui::{self as nwg, PartialUi};
 use std::cell::RefCell;
 
-pub trait PlayerInterface {
-    fn play(&self, media_path: &str);
-    fn pause(&self, paused: bool);
-    fn seek(&self, time: f64);
-    fn speed(&self, factor: f64);
-    fn stop(&self);
-}
-
 #[derive(Default)]
 pub struct Player {
     mpv: RefCell<Option<mpv::MpvHandler>>,
 }
 
 impl Player {
-    fn command(&self, args: &[&str]) {
+    pub fn command(&self, args: &[&str]) {
         let mut mpv = self.mpv.borrow_mut();
         let mpv = mpv.as_mut().expect("Failed to create MPV");
         if let Err(e) = mpv.command(args) {
             eprintln!("Failed to execute command {:?} - {:?}", args, e);
         }
     }
-    fn set_prop<T: mpv::MpvFormat>(&self, prop: &str, val: T) {
+    pub fn set_prop<T: mpv::MpvFormat>(&self, prop: &str, val: T) {
         let mut mpv = self.mpv.borrow_mut();
         let mpv = mpv.as_mut().expect("Failed to create MPV");
         if let Err(e) = mpv.set_property(prop, val) {
@@ -31,30 +23,11 @@ impl Player {
     }
 }
 
-impl PlayerInterface for Player {
-    fn play(&self, media_path: &str) {
-        self.command(&["loadfile", media_path]);
-    }
-    fn pause(&self, paused: bool) {
-        self.set_prop("pause", paused);
-    }
-    fn seek(&self, pos: f64) {
-        self.set_prop("time-pos", pos);
-    }
-    fn speed(&self, factor: f64) {
-        self.set_prop("speed", factor);
-    }
-    fn stop(&self) {
-        self.command(&["stop"]);
-    }
-}
-
 impl PartialUi for Player {
     fn build_partial<W: Into<nwg::ControlHandle>>(
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
-
         let mut mpv_builder =
             mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
         mpv_builder
