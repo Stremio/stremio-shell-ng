@@ -1,43 +1,22 @@
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
-use serde::{Deserialize, Serialize};
-use serde_json;
+use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use webview2::Controller;
 use winapi::shared::windef::HWND__;
 use winapi::um::winuser::*;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCRequest {
-    id: u64,
-    args: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCResponseDataTransport {
-    properties: Vec<Vec<String>>,
-    signals: Vec<String>,
-    methods: Vec<Vec<String>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCResponseData {
-    transport: RPCResponseDataTransport,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCResponse {
-    id: u64,
-    object: String,
-    #[serde(rename = "type")]
-    response_type: u32,
-    data: RPCResponseData,
-}
-
 #[derive(Default)]
 pub struct WebView {
     controller: Rc<OnceCell<Controller>>,
+    pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
+    notice: nwg::Notice,
+    compute: RefCell<Option<thread::JoinHandle<()>>>,
+    message: Arc<Mutex<Option<String>>>,
 }
 
 impl WebView {
@@ -61,9 +40,19 @@ impl PartialUi for WebView {
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
+        let (tx, rx) = mpsc::channel::<String>();
+        let (tx1, rx1) = mpsc::channel::<String>();
+        data.channel = RefCell::new(Some((tx, Arc::new(Mutex::new(rx1)))));
+
         let parent = parent.expect("No parent window").into();
-        let hwnd = parent.hwnd().expect("Cannot obtain window handle");
+
+        let hwnd = parent.hwnd().expect("Cannot obtain window handle") as i64;
+        nwg::Notice::builder()
+            .parent(parent)
+            .build(&mut data.notice)
+            .ok();
         let controller_clone = data.controller.clone();
+        let hwnd = hwnd as *mut HWND__;
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments("--disable-gpu")
             .build(move |env| {
@@ -98,30 +87,12 @@ impl PartialUi for WebView {
                                 |_| Ok(()),
                             )
                             .ok();
-                        webview.add_web_message_received(|w, msg| {
+                        webview.add_web_message_received(move |_w, msg| {
                             let msg = msg.try_get_web_message_as_string()?;
-                            let msg: RPCRequest = serde_json::from_str(&msg).unwrap();
-                            dbg!(msg.clone());
-                            if msg.id == 0 {
-                                let resp: RPCResponse = RPCResponse {
-                                    id: 0,
-                                    object: "transport".to_string(),
-                                    response_type: 3,
-                                    data: RPCResponseData {
-                                        transport: RPCResponseDataTransport {
-                                            properties: vec![vec![], vec!["".to_string(), "shellVersion".to_string(), "".to_string(), "5.0.0".to_string()]],
-                                            signals: vec![],
-                                            methods: vec![vec!["onEvent".to_string(), "".to_string()]]
-                                        }
-                                    }
-                                };
-                                let resp_json = serde_json::to_string(&resp).unwrap();
-                                dbg!(resp_json.clone());
-                                w.post_web_message_as_string(&resp_json).ok();
-                            }
+                            tx1.send(msg).ok();
                             Ok(())
                         }).ok();
-                        WebView::resize_to_window_bounds_and_show(Some(&controller), parent.hwnd());
+                        WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
                         controller_clone
                             .set(controller)
                             .expect("Cannot update the controller");
@@ -135,6 +106,17 @@ impl PartialUi for WebView {
                 &format!("{}", e),
             );
         }
+
+        let sender = data.notice.sender();
+        let message = data.message.clone();
+        *data.compute.borrow_mut() = Some(thread::spawn(move || loop {
+            if let Ok(msg) = rx.try_recv() {
+                let mut message = message.lock().unwrap();
+                *message = Some(msg);
+                sender.notice();
+            }
+        }));
+
         Ok(())
     }
     fn process_event<'a>(
@@ -145,6 +127,7 @@ impl PartialUi for WebView {
     ) {
         use nwg::Event as E;
         match evt {
+            E::OnInit => {}
             E::OnResize | E::OnWindowMaximize => {
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }
@@ -152,6 +135,17 @@ impl PartialUi for WebView {
                 if let Some(controller) = self.controller.get() {
                     controller.put_is_visible(false).ok();
                 }
+            }
+            E::OnNotice => {
+                let msg = self.message.clone();
+                let mut msg = msg.lock().unwrap();
+                if let Some(msg) = &*msg {
+                    if let Some(controller) = self.controller.get() {
+                        let webview = controller.get_webview().expect("Cannot get vebview");
+                        webview.post_web_message_as_string(msg).ok();
+                    }
+                }
+                *msg = None;
             }
             _ => {}
         }

@@ -1,9 +1,42 @@
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::cmp;
+use std::sync::Arc;
+use std::thread;
 
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
+
+//////////////////////////////////////////
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RPCRequest {
+    id: u64,
+    args: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RPCResponseDataTransport {
+    properties: Vec<Vec<String>>,
+    signals: Vec<String>,
+    methods: Vec<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RPCResponseData {
+    transport: RPCResponseDataTransport,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct RPCResponse {
+    id: u64,
+    object: String,
+    #[serde(rename = "type")]
+    response_type: u32,
+    data: RPCResponseData,
+}
+//////////////////////////////////////////
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
@@ -26,13 +59,74 @@ impl MainWindow {
         self.window
             .set_size(dimensions.0 as u32, dimensions.1 as u32);
         self.window.set_position(x, y);
-        // let video_path = "/home/ivo/storage/bbb_sunflower_1080p_30fps_normal.mp4";
-        let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-        self.player.command(&["loadfile", video_path]);
-        // self.player.set_prop("time-pos", 120.0);
-        self.player.set_prop("speed", 2.0);
-        // self.player.set_prop("pause", true);
-        self.player.command(&["stop"]);
+
+        let player_channel = self.player.channel.borrow();
+        let (player_tx, player_rx) = player_channel.as_ref().unwrap();
+        let player_tx = player_tx.clone();
+        let player_rx = Arc::clone(player_rx);
+
+        let web_channel = self.webview.channel.borrow();
+        let (web_tx, web_rx) = web_channel.as_ref().unwrap();
+        let web_tx = web_tx.clone();
+        let web_rx = Arc::clone(web_rx);
+        thread::spawn(move || {
+            loop {
+                // Read message from player
+                {
+                    let rx = player_rx.lock().unwrap();
+                    if let Ok(msg) = rx.try_recv() {
+                        println!("APP GOT FROM PLAYER {}", msg);
+                        // web_tx.send(msg).ok();
+                    }
+                };
+
+                // read message from WebView
+                {
+                    let rx = web_rx.lock().unwrap();
+                    if let Ok(msg) = rx.try_recv() {
+                        let msg: RPCRequest = serde_json::from_str(&msg).unwrap();
+                        if msg.id == 0 {
+                            let resp: RPCResponse = RPCResponse {
+                                id: 0,
+                                object: "transport".to_string(),
+                                response_type: 3,
+                                data: RPCResponseData {
+                                    transport: RPCResponseDataTransport {
+                                        properties: vec![
+                                            vec![],
+                                            vec![
+                                                "".to_string(),
+                                                "shellVersion".to_string(),
+                                                "".to_string(),
+                                                "5.0.0".to_string(),
+                                            ],
+                                        ],
+                                        signals: vec![],
+                                        methods: vec![vec!["onEvent".to_string(), "".to_string()]],
+                                    },
+                                },
+                            };
+                            let resp_json = serde_json::to_string(&resp).unwrap();
+                            web_tx.send(resp_json).ok();
+                        } else if let Some(args) = msg.args {
+                            // TODO: this can panic
+                            let method = serde_json::from_value::<String>(args[0].clone()).unwrap();
+                            if method.starts_with("mpv-") {
+                                let resp_json = serde_json::to_string(&args).unwrap();
+                                player_tx.send(resp_json).ok();
+                            }
+                        }
+                    }
+                };
+            }
+        });
+        // // let video_path = "/home/ivo/storage/bbb_sunflower_1080p_30fps_normal.mp4";
+        // let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
+        // self.player.command(&["loadfile", video_path]);
+        // // self.player.set_prop("time-pos", 120.0);
+        // self.player.set_prop("speed", 2.0);
+        // // self.player.set_prop("pause", true);
+        // self.player.command(&["stop"]);
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();
