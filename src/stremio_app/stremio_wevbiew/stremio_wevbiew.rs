@@ -16,7 +16,7 @@ pub struct WebView {
     pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
     notice: nwg::Notice,
     compute: RefCell<Option<thread::JoinHandle<()>>>,
-    message: Arc<Mutex<Option<String>>>,
+    message: Arc<Mutex<Vec<String>>>,
 }
 
 impl WebView {
@@ -112,7 +112,7 @@ impl PartialUi for WebView {
         *data.compute.borrow_mut() = Some(thread::spawn(move || loop {
             if let Ok(msg) = rx.try_recv() {
                 let mut message = message.lock().unwrap();
-                *message = Some(msg);
+                message.push(msg);
                 sender.notice();
             }
         }));
@@ -138,14 +138,14 @@ impl PartialUi for WebView {
             }
             E::OnNotice => {
                 let msg = self.message.clone();
-                let mut msg = msg.lock().unwrap();
-                if let Some(msg) = &*msg {
-                    if let Some(controller) = self.controller.get() {
-                        let webview = controller.get_webview().expect("Cannot get vebview");
+                if let Some(controller) = self.controller.get() {
+                    let webview = controller.get_webview().expect("Cannot get vebview");
+                    let mut msg = msg.lock().unwrap();
+                    for msg in msg.iter() {
                         webview.post_web_message_as_string(msg).ok();
                     }
+                    *msg = vec![];
                 }
-                *msg = None;
             }
             _ => {}
         }
