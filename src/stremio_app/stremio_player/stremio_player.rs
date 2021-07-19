@@ -1,8 +1,50 @@
 use native_windows_gui::{self as nwg, PartialUi};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct MpvEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+impl MpvEvent {
+    fn value_from_format(data: mpv::Format, as_json: bool) -> serde_json::Value {
+        match data {
+            mpv::Format::Flag(d) => serde_json::Value::Bool(d),
+            mpv::Format::Int(d) => serde_json::Value::Number(
+                serde_json::Number::from_f64(d as f64).expect("MPV returned invalid number"),
+            ),
+            mpv::Format::Double(d) => serde_json::Value::Number(
+                serde_json::Number::from_f64(d).expect("MPV returned invalid number"),
+            ),
+            mpv::Format::OsdStr(s) => serde_json::Value::String(s.to_string()),
+            mpv::Format::Str(s) => {
+                if as_json {
+                    serde_json::from_str(s).expect("MPV returned invalid JSON data")
+                } else {
+                    serde_json::Value::String(s.to_string())
+                }
+            }
+        }
+    }
+    fn string_from_end_reason(data: mpv::EndFileReason) -> String {
+        match data {
+            mpv::EndFileReason::MPV_END_FILE_REASON_ERROR => "error".to_string(),
+            mpv::EndFileReason::MPV_END_FILE_REASON_QUIT => "quit".to_string(),
+            _ => "other".to_string(),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Player {
@@ -48,24 +90,124 @@ impl PartialUi for Player {
                 .set_option("msg-level", "all=v")
                 .expect("failed setting msg-level");
             //mpv_builder.set_option("quiet", "yes").expect("failed setting msg-level");
-            let mut mpv = mpv_builder.build().unwrap();
+            let mut mpv = mpv_builder.build().expect("Cannot build MPV");
             'main: loop {
                 // wait up to 0.0 seconds for an event.
                 while let Some(event) = mpv.wait_event(0.0) {
                     // even if you don't do anything with the events, it is still necessary to empty
                     // the event loop
-                    // TODO: Parse and format the Event in proper JSON format
-                    tx1.send(format!("{:?}", event)).ok();
-                    println!("RECEIVED EVENT : {:?}", event);
-                    match event {
-                        mpv::Event::Shutdown | mpv::Event::EndFile(_) => {
+
+                    let json_responses = ["track-list", "video-params", "metadata"];
+                    let resp_event = match event {
+                        mpv::Event::PropertyChange {
+                            name,
+                            change,
+                            reply_userdata: _,
+                        } => Some((
+                            "mpv-prop-change",
+                            MpvEvent {
+                                name: Some(name.to_string()),
+                                data: Some(MpvEvent::value_from_format(
+                                    change,
+                                    json_responses.contains(&name),
+                                )),
+                                ..Default::default()
+                            },
+                        )),
+                        mpv::Event::EndFile(Ok(reason)) => Some((
+                            "mpv-event-ended",
+                            MpvEvent {
+                                reason: Some(MpvEvent::string_from_end_reason(reason)),
+                                ..Default::default()
+                            },
+                        )),
+                        mpv::Event::Shutdown => {
                             break 'main;
+                        }
+                        _ => None,
+                    };
+                    if let Some(resp) = resp_event {
+                        tx1.send(
+                            serde_json::to_string(&resp).expect("Cannot generate MPV event JSON"),
+                        )
+                        .ok();
+                    }
+                }
+                if let Ok(msg) = rx.try_recv() {
+                    let (message, data): (String, serde_json::Value) =
+                        serde_json::from_str(&msg).unwrap();
+                    match message.as_str() {
+                        "mpv-observe-prop" => {
+                            if let Some(property) = data.as_str() {
+                                match property {
+                                    "pause" | "paused-for-cache" | "seeking" | "eof-reached" => {
+                                        mpv.observe_property::<bool>(property, 0).ok();
+                                    }
+                                    "aid" | "vid" | "sid" => {
+                                        mpv.observe_property::<i64>(property, 0).ok();
+                                    }
+                                    "time-pos"
+                                    | "volume"
+                                    | "duration"
+                                    | "sub-scale"
+                                    | "cache-buffering-state"
+                                    | "sub-pos" => {
+                                        mpv.observe_property::<f64>(property, 0).ok();
+                                    }
+                                    "path" | "mpv-version" | "ffmpeg-version" | "track-list"
+                                    | "video-params" | "metadata" => {
+                                        mpv.observe_property::<&str>(property, 0).ok();
+                                    }
+                                    other => {
+                                        eprintln!(
+                                            "mpv-observe-prop: not implemented for `{}`",
+                                            other
+                                        );
+                                    }
+                                };
+                            }
+                        }
+                        "mpv-set-prop" => {
+                            match serde_json::from_value::<Vec<serde_json::Value>>(data.clone()) {
+                                Ok(prop_vector) => {
+                                    if let [prop, val] = &prop_vector[..] {
+                                        let prop = prop.as_str().expect("Property is not a string");
+                                        // If we change vo MPV panics
+                                        if prop != "vo" {
+                                            match val {
+                                                serde_json::Value::Bool(v) => {
+                                                    mpv.set_property(prop, *v).ok();
+                                                }
+                                                serde_json::Value::Number(v) => {
+                                                    mpv.set_property(prop, v.as_f64().unwrap())
+                                                        .ok();
+                                                }
+                                                serde_json::Value::String(v) => {
+                                                    mpv.set_property(prop, v.as_str()).ok();
+                                                }
+                                                _ => {}
+                                            };
+                                        };
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("mpv-set-prop Error: {:?} for data {}", e, data)
+                                }
+                            };
+                        }
+                        "mpv-command" => {
+                            match serde_json::from_value::<Vec<String>>(data.clone()) {
+                                Ok(data) => {
+                                    let data: Vec<_> = data.iter().map(|s| s.as_str()).collect();
+                                    mpv.command(&data).ok();
+                                }
+                                Err(e) => {
+                                    eprintln!("mpv-command Error: {:?} for data {}", e, data)
+                                }
+                            }
                         }
                         _ => {}
                     };
-                }
-                if let Ok(msg) = rx.try_recv() {
-                    println!("PLAYER RECEIVED MESSAGE: {}", msg);
                     // let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
                     // mpv.command(&["loadfile", video_path]).ok();
                     // mpv.command(&["stop"]).ok();

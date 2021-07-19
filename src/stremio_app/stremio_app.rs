@@ -28,13 +28,16 @@ struct RPCResponseData {
     transport: RPCResponseDataTransport,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 struct RPCResponse {
     id: u64,
     object: String,
     #[serde(rename = "type")]
     response_type: u32,
-    data: RPCResponseData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<RPCResponseData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<serde_json::Value>,
 }
 //////////////////////////////////////////
 
@@ -61,12 +64,16 @@ impl MainWindow {
         self.window.set_position(x, y);
 
         let player_channel = self.player.channel.borrow();
-        let (player_tx, player_rx) = player_channel.as_ref().unwrap();
+        let (player_tx, player_rx) = player_channel
+            .as_ref()
+            .expect("Cannont obtain communication channel for the Player");
         let player_tx = player_tx.clone();
         let player_rx = Arc::clone(player_rx);
 
         let web_channel = self.webview.channel.borrow();
-        let (web_tx, web_rx) = web_channel.as_ref().unwrap();
+        let (web_tx, web_rx) = web_channel
+            .as_ref()
+            .expect("Cannont obtain communication channel for the Web UI");
         let web_tx = web_tx.clone();
         let web_rx = Arc::clone(web_rx);
         thread::spawn(move || {
@@ -75,8 +82,16 @@ impl MainWindow {
                 {
                     let rx = player_rx.lock().unwrap();
                     if let Ok(msg) = rx.try_recv() {
-                        println!("APP GOT FROM PLAYER {}", msg);
-                        // web_tx.send(msg).ok();
+                        let resp = RPCResponse {
+                            id: 1,
+                            object: "transport".to_string(),
+                            response_type: 1,
+                            args: serde_json::from_str(&msg).ok(),
+                            ..Default::default()
+                        };
+                        let resp_json =
+                            serde_json::to_string(&resp).expect("Cannot serialize the response");
+                        web_tx.send(resp_json).ok();
                     }
                 };
 
@@ -84,39 +99,51 @@ impl MainWindow {
                 {
                     let rx = web_rx.lock().unwrap();
                     if let Ok(msg) = rx.try_recv() {
-                        let msg: RPCRequest = serde_json::from_str(&msg).unwrap();
-                        if msg.id == 0 {
-                            let resp: RPCResponse = RPCResponse {
-                                id: 0,
-                                object: "transport".to_string(),
-                                response_type: 3,
-                                data: RPCResponseData {
-                                    transport: RPCResponseDataTransport {
-                                        properties: vec![
-                                            vec![],
-                                            vec![
-                                                "".to_string(),
-                                                "shellVersion".to_string(),
-                                                "".to_string(),
-                                                "5.0.0".to_string(),
+                        if let Ok(msg) = serde_json::from_str::<RPCRequest>(&msg) {
+                            // The handshake. Here we send some useful data to the WEB UI
+                            if msg.id == 0 {
+                                let resp = RPCResponse {
+                                    id: 0,
+                                    object: "transport".to_string(),
+                                    response_type: 3,
+                                    data: Some(RPCResponseData {
+                                        transport: RPCResponseDataTransport {
+                                            properties: vec![
+                                                vec![],
+                                                vec![
+                                                    "".to_string(),
+                                                    "shellVersion".to_string(),
+                                                    "".to_string(),
+                                                    "5.0.0".to_string(),
+                                                ],
                                             ],
-                                        ],
-                                        signals: vec![],
-                                        methods: vec![vec!["onEvent".to_string(), "".to_string()]],
-                                    },
-                                },
-                            };
-                            let resp_json = serde_json::to_string(&resp).unwrap();
-                            web_tx.send(resp_json).ok();
-                        } else if let Some(args) = msg.args {
-                            // TODO: this can panic
-                            let method = serde_json::from_value::<String>(args[0].clone()).unwrap();
-                            if method.starts_with("mpv-") {
-                                let resp_json = serde_json::to_string(&args).unwrap();
-                                player_tx.send(resp_json).ok();
+                                            signals: vec![],
+                                            methods: vec![vec![
+                                                "onEvent".to_string(),
+                                                "".to_string(),
+                                            ]],
+                                        },
+                                    }),
+                                    ..Default::default()
+                                };
+                                let resp_json = serde_json::to_string(&resp).unwrap();
+                                web_tx.send(resp_json).ok();
+                            } else if let Some(args) = msg.args {
+                                // TODO: this can panic
+                                if let Some(method) = args.first() {
+                                    let method = method.as_str().unwrap();
+                                    if method.starts_with("mpv-") {
+                                        let resp_json = serde_json::to_string(&args).unwrap();
+                                        player_tx.send(resp_json).ok();
+                                    } else {
+                                        eprintln!("Unsupported command {:?}", args)
+                                    }
+                                }
                             }
+                        } else {
+                            eprintln!("Web UI sent invalid JSON: {:?}", msg);
                         }
-                    }
+                    } // try_recv
                 };
             }
         });
