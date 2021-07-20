@@ -29,8 +29,9 @@ impl WebView {
                 let mut rect = mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
                 controller.put_bounds(rect).ok();
-                controller.put_is_visible(true).ok();
             }
+            controller.put_is_visible(true).ok();
+            controller.move_focus(webview2::MoveFocusReason::Programmatic).ok();
         }
     }
 }
