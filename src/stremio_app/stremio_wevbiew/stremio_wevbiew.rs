@@ -16,7 +16,7 @@ pub struct WebView {
     pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
     notice: nwg::Notice,
     compute: RefCell<Option<thread::JoinHandle<()>>>,
-    message: Arc<Mutex<Vec<String>>>,
+    message_queue: Arc<Mutex<Vec<String>>>,
 }
 
 impl WebView {
@@ -75,7 +75,8 @@ impl PartialUi for WebView {
                             .get_webview()
                             .expect("Cannot obtain webview from controller");
                         webview
-                            .navigate("https://www.boyanpetrov.rip/stremio/index.html")
+                            // .navigate("https://www.boyanpetrov.rip/stremio/index.html")
+                            .navigate("http://app.strem.io/shell-v4.4/")
                             .expect("Cannot load the webUI");
                             webview
                             .add_script_to_execute_on_document_created(
@@ -108,9 +109,9 @@ impl PartialUi for WebView {
         }
 
         let sender = data.notice.sender();
-        let message = data.message.clone();
+        let message = data.message_queue.clone();
         *data.compute.borrow_mut() = Some(thread::spawn(move || loop {
-            if let Ok(msg) = rx.try_recv() {
+            if let Ok(msg) = rx.recv() {
                 let mut message = message.lock().unwrap();
                 message.push(msg);
                 sender.notice();
@@ -137,14 +138,14 @@ impl PartialUi for WebView {
                 }
             }
             E::OnNotice => {
-                let msg = self.message.clone();
+                let message_queue = self.message_queue.clone();
                 if let Some(controller) = self.controller.get() {
                     let webview = controller.get_webview().expect("Cannot get vebview");
-                    let mut msg = msg.lock().unwrap();
-                    for msg in msg.iter() {
+                    let mut message_queue = message_queue.lock().unwrap();
+                    for msg in message_queue.iter() {
                         webview.post_web_message_as_string(msg).ok();
                     }
-                    *msg = vec![];
+                    *message_queue = vec![];
                 }
             }
             _ => {}

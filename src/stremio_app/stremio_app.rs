@@ -74,86 +74,72 @@ impl MainWindow {
         let (web_tx, web_rx) = web_channel
             .as_ref()
             .expect("Cannont obtain communication channel for the Web UI");
-        let web_tx = web_tx.clone();
+        let web_tx_player = web_tx.clone();
+        let web_tx_web = web_tx.clone();
         let web_rx = Arc::clone(web_rx);
-        thread::spawn(move || {
-            loop {
-                // Read message from player
-                {
-                    let rx = player_rx.lock().unwrap();
-                    if let Ok(msg) = rx.try_recv() {
+        // Read message from player
+        thread::spawn(move || loop {
+            let rx = player_rx.lock().unwrap();
+            if let Ok(msg) = rx.recv() {
+                let resp = RPCResponse {
+                    id: 1,
+                    object: "transport".to_string(),
+                    response_type: 1,
+                    args: serde_json::from_str(&msg).ok(),
+                    ..Default::default()
+                };
+                let resp_json =
+                    serde_json::to_string(&resp).expect("Cannot serialize the response");
+                web_tx_player.send(resp_json).ok();
+            } // recv
+        }); // thread
+        // read message from WebView
+        thread::spawn(move || loop {
+            let rx = web_rx.lock().unwrap();
+            if let Ok(msg) = rx.recv() {
+                if let Ok(msg) = serde_json::from_str::<RPCRequest>(&msg) {
+                    // The handshake. Here we send some useful data to the WEB UI
+                    if msg.id == 0 {
                         let resp = RPCResponse {
-                            id: 1,
+                            id: 0,
                             object: "transport".to_string(),
-                            response_type: 1,
-                            args: serde_json::from_str(&msg).ok(),
+                            response_type: 3,
+                            data: Some(RPCResponseData {
+                                transport: RPCResponseDataTransport {
+                                    properties: vec![
+                                        vec![],
+                                        vec![
+                                            "".to_string(),
+                                            "shellVersion".to_string(),
+                                            "".to_string(),
+                                            "5.0.0".to_string(),
+                                        ],
+                                    ],
+                                    signals: vec![],
+                                    methods: vec![vec!["onEvent".to_string(), "".to_string()]],
+                                },
+                            }),
                             ..Default::default()
                         };
-                        let resp_json =
-                            serde_json::to_string(&resp).expect("Cannot serialize the response");
-                        web_tx.send(resp_json).ok();
-                    }
-                };
-
-                // read message from WebView
-                {
-                    let rx = web_rx.lock().unwrap();
-                    if let Ok(msg) = rx.try_recv() {
-                        if let Ok(msg) = serde_json::from_str::<RPCRequest>(&msg) {
-                            // The handshake. Here we send some useful data to the WEB UI
-                            if msg.id == 0 {
-                                let resp = RPCResponse {
-                                    id: 0,
-                                    object: "transport".to_string(),
-                                    response_type: 3,
-                                    data: Some(RPCResponseData {
-                                        transport: RPCResponseDataTransport {
-                                            properties: vec![
-                                                vec![],
-                                                vec![
-                                                    "".to_string(),
-                                                    "shellVersion".to_string(),
-                                                    "".to_string(),
-                                                    "5.0.0".to_string(),
-                                                ],
-                                            ],
-                                            signals: vec![],
-                                            methods: vec![vec![
-                                                "onEvent".to_string(),
-                                                "".to_string(),
-                                            ]],
-                                        },
-                                    }),
-                                    ..Default::default()
-                                };
-                                let resp_json = serde_json::to_string(&resp).unwrap();
-                                web_tx.send(resp_json).ok();
-                            } else if let Some(args) = msg.args {
-                                // TODO: this can panic
-                                if let Some(method) = args.first() {
-                                    let method = method.as_str().unwrap();
-                                    if method.starts_with("mpv-") {
-                                        let resp_json = serde_json::to_string(&args).unwrap();
-                                        player_tx.send(resp_json).ok();
-                                    } else {
-                                        eprintln!("Unsupported command {:?}", args)
-                                    }
-                                }
+                        let resp_json = serde_json::to_string(&resp).unwrap();
+                        web_tx_web.send(resp_json).ok();
+                    } else if let Some(args) = msg.args {
+                        // TODO: this can panic
+                        if let Some(method) = args.first() {
+                            let method = method.as_str().unwrap();
+                            if method.starts_with("mpv-") {
+                                let resp_json = serde_json::to_string(&args).unwrap();
+                                player_tx.send(resp_json).ok();
+                            } else {
+                                eprintln!("Unsupported command {:?}", args)
                             }
-                        } else {
-                            eprintln!("Web UI sent invalid JSON: {:?}", msg);
                         }
-                    } // try_recv
-                };
-            }
-        });
-        // // let video_path = "/home/ivo/storage/bbb_sunflower_1080p_30fps_normal.mp4";
-        // let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-        // self.player.command(&["loadfile", video_path]);
-        // // self.player.set_prop("time-pos", 120.0);
-        // self.player.set_prop("speed", 2.0);
-        // // self.player.set_prop("pause", true);
-        // self.player.command(&["stop"]);
+                    }
+                } else {
+                    eprintln!("Web UI sent invalid JSON: {:?}", msg);
+                }
+            } // recv
+        }); // thread
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();

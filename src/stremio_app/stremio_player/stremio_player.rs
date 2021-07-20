@@ -91,9 +91,20 @@ impl PartialUi for Player {
                 .expect("failed setting msg-level");
             //mpv_builder.set_option("quiet", "yes").expect("failed setting msg-level");
             let mut mpv = mpv_builder.build().expect("Cannot build MPV");
+
+            let message_queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+            let thread_messages = Arc::clone(&message_queue);
+
+            thread::spawn(move || loop {
+                if let Ok(msg) = rx.recv() {
+                    let mut messages = thread_messages.lock().unwrap();
+                    messages.push(msg);
+                }
+            });
+
             'main: loop {
-                // wait up to 0.0 seconds for an event.
-                while let Some(event) = mpv.wait_event(0.0) {
+                // wait up to X seconds for an event.
+                while let Some(event) = mpv.wait_event(0.03) {
                     // even if you don't do anything with the events, it is still necessary to empty
                     // the event loop
 
@@ -132,11 +143,13 @@ impl PartialUi for Player {
                         )
                         .ok();
                     }
-                }
-                if let Ok(msg) = rx.try_recv() {
-                    let (message, data): (String, serde_json::Value) =
-                        serde_json::from_str(&msg).unwrap();
-                    match message.as_str() {
+                } // event processing
+
+                let mut in_message = message_queue.lock().unwrap();
+                for msg in in_message.iter() {
+                    let (command, data): (String, serde_json::Value) =
+                        serde_json::from_str(msg).unwrap();
+                    match command.as_str() {
                         "mpv-observe-prop" => {
                             if let Some(property) = data.as_str() {
                                 match property {
@@ -213,6 +226,7 @@ impl PartialUi for Player {
                     // mpv.command(&["stop"]).ok();
                     // mpv.set_property("paused", true).ok();
                 }
+                *in_message = vec![];
             }
         });
 
