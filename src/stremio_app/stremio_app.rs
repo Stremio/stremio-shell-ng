@@ -43,19 +43,26 @@ struct RPCResponse {
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
+    pub webui_url: String,
     #[nwg_control(title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
-    #[nwg_events( OnWindowClose: [MainWindow::on_quit], OnInit: [MainWindow::on_init] )]
-    window: nwg::Window,
+    #[nwg_events( OnWindowClose: [MainWindow::on_quit], OnInit: [MainWindow::on_init], OnMinMaxInfo: [MainWindow::on_min_max(SELF, EVT_DATA)] )]
+    pub window: nwg::Window,
     #[nwg_partial(parent: window)]
-    webview: WebView,
+    pub webview: WebView,
     #[nwg_partial(parent: window)]
-    player: Player,
+    pub player: Player,
 }
 
 impl MainWindow {
+    const MIN_WIDTH: i32 = 1000;
+    const MIN_HEIGHT: i32 = 600;
     fn on_init(&self) {
+        self.webview.endpoint.set(self.webui_url.clone()).ok();
         let small_side = cmp::min(nwg::Monitor::width(), nwg::Monitor::height()) * 70 / 100;
-        let dimensions = (small_side * 16 / 9, small_side);
+        let dimensions = (
+            cmp::max(small_side * 16 / 9, Self::MIN_WIDTH),
+            cmp::max(small_side, Self::MIN_HEIGHT),
+        );
         let [total_width, total_height] = [nwg::Monitor::width(), nwg::Monitor::height()];
         let x = (total_width - dimensions.0) / 2;
         let y = (total_height - dimensions.1) / 2;
@@ -93,7 +100,7 @@ impl MainWindow {
                 web_tx_player.send(resp_json).ok();
             } // recv
         }); // thread
-        // read message from WebView
+
         thread::spawn(move || loop {
             let rx = web_rx.lock().unwrap();
             if let Ok(msg) = rx.recv() {
@@ -131,7 +138,12 @@ impl MainWindow {
                                 let resp_json = serde_json::to_string(&args).unwrap();
                                 player_tx.send(resp_json).ok();
                             } else {
-                                eprintln!("Unsupported command {:?}", args)
+                                match method {
+                                    "toggle-fullscreen" => {
+                                        println!("full screen toggle requested");
+                                    }
+                                    _ => eprintln!("Unsupported command {:?}", args),
+                                }
                             }
                         }
                     }
@@ -140,6 +152,10 @@ impl MainWindow {
                 }
             } // recv
         }); // thread
+    }
+    fn on_min_max(&self, data: &nwg::EventData) {
+        let data = data.on_min_max();
+        data.set_min_size(Self::MIN_WIDTH, Self::MIN_HEIGHT);
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();

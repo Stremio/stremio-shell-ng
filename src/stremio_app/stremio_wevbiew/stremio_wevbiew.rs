@@ -1,5 +1,6 @@
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
+use serde_json::json;
 use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
@@ -12,6 +13,7 @@ use winapi::um::winuser::*;
 
 #[derive(Default)]
 pub struct WebView {
+    pub endpoint: Rc<OnceCell<String>>,
     controller: Rc<OnceCell<Controller>>,
     pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
     notice: nwg::Notice,
@@ -31,7 +33,9 @@ impl WebView {
                 controller.put_bounds(rect).ok();
             }
             controller.put_is_visible(true).ok();
-            controller.move_focus(webview2::MoveFocusReason::Programmatic).ok();
+            controller
+                .move_focus(webview2::MoveFocusReason::Programmatic)
+                .ok();
         }
     }
 }
@@ -42,8 +46,9 @@ impl PartialUi for WebView {
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
         let (tx, rx) = mpsc::channel::<String>();
-        let (tx1, rx1) = mpsc::channel::<String>();
-        data.channel = RefCell::new(Some((tx, Arc::new(Mutex::new(rx1)))));
+        let tx_drag_drop = tx.clone();
+        let (tx_web, rx_web) = mpsc::channel::<String>();
+        data.channel = RefCell::new(Some((tx, Arc::new(Mutex::new(rx_web)))));
 
         let parent = parent.expect("No parent window").into();
 
@@ -53,6 +58,7 @@ impl PartialUi for WebView {
             .build(&mut data.notice)
             .ok();
         let controller_clone = data.controller.clone();
+        let endpoint = data.endpoint.clone();
         let hwnd = hwnd as *mut HWND__;
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments("--disable-gpu")
@@ -75,11 +81,13 @@ impl PartialUi for WebView {
                         let webview = controller
                             .get_webview()
                             .expect("Cannot obtain webview from controller");
+                        if let Some(endpoint) = endpoint.get() {
+                        if let Err(e) = webview
+                            .navigate(endpoint.as_str()) {
+                                eprintln!("Cannot load WEB UI at '{}': {:?}", &endpoint, e);
+                        };
+                    }
                         webview
-                            // .navigate("https://www.boyanpetrov.rip/stremio/index.html")
-                            .navigate("http://app.strem.io/shell-v4.4/")
-                            .expect("Cannot load the webUI");
-                            webview
                             .add_script_to_execute_on_document_created(
                                 r##"
                             window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
@@ -89,9 +97,24 @@ impl PartialUi for WebView {
                                 |_| Ok(()),
                             )
                             .ok();
+                        let tx_fs = tx_web.clone();
                         webview.add_web_message_received(move |_w, msg| {
                             let msg = msg.try_get_web_message_as_string()?;
-                            tx1.send(msg).ok();
+                            tx_web.send(msg).ok();
+                            Ok(())
+                        }).ok();
+                        webview.add_new_window_requested(move |_w, msg| {
+                            let data = json!({
+                                    "object": "transport",
+                                    "type": 1,
+                                    "args": ["dragdrop" ,[msg.get_uri().unwrap()]]
+                            });
+                            tx_drag_drop.send(data.to_string()).ok();
+                            msg.put_handled(true).ok();
+                            Ok(())
+                        }).ok();
+                        webview.add_contains_full_screen_element_changed(move |_w| {
+                            tx_fs.send(r#"{"id":1, "args": ["toggle-fullscreen"]}"#.to_string()).ok();
                             Ok(())
                         }).ok();
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
@@ -129,7 +152,6 @@ impl PartialUi for WebView {
     ) {
         use nwg::Event as E;
         match evt {
-            E::OnInit => {}
             E::OnResize | E::OnWindowMaximize => {
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }

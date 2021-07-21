@@ -1,7 +1,19 @@
 use native_windows_gui::{self as nwg, NativeUi};
+use structopt::StructOpt;
 
 mod stremio_app;
 use crate::stremio_app::{stremio_server::StremioServer, MainWindow};
+
+const WEB_ENDPOINT: &str = "http://app.strem.io/shell-v4.4/";
+
+#[derive(StructOpt, Debug)]
+#[structopt(name = "basic")]
+struct Opt {
+    #[structopt(long)]
+    development: bool,
+    #[structopt(long, default_value = WEB_ENDPOINT)]
+    webui_url: String,
+}
 
 fn main() {
     // native-windows-gui has some basic high DPI support with the high-dpi
@@ -14,10 +26,28 @@ fn main() {
         nwg::set_dpi_awareness()
     };
 
-    let streaming_server = StremioServer::new();
+    let opt = Opt::from_args();
+
+    let streaming_server: Option<StremioServer> = if opt.development {
+        None
+    } else {
+        Some(StremioServer::new())
+    };
+
+    let webui_url = if opt.development && opt.webui_url == WEB_ENDPOINT {
+        "http://localhost:11470".to_string()
+    } else {
+        opt.webui_url
+    };
 
     nwg::init().expect("Failed to init Native Windows GUI");
-    let _app = MainWindow::build_ui(Default::default()).expect("Failed to build UI");
+    let _app = MainWindow::build_ui(MainWindow {
+        webui_url,
+        ..Default::default()
+    })
+    .expect("Failed to build UI");
     nwg::dispatch_thread_events();
-    streaming_server.try_kill();
+    if let Some(streaming_server) = streaming_server {
+        streaming_server.try_kill();
+    }
 }
