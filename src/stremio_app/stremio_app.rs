@@ -148,14 +148,15 @@ impl MainWindow {
                             }),
                             ..Default::default()
                         };
-                        let resp_json = serde_json::to_string(&resp).unwrap();
+                        let resp_json =
+                            serde_json::to_string(&resp).expect("Cannot build response");
                         web_tx_web.send(resp_json).ok();
                     } else if let Some(args) = msg.args {
-                        // TODO: this can panic
                         if let Some(method) = args.first() {
-                            let method = method.as_str().unwrap();
+                            let method = method.as_str().unwrap_or("invalid-method");
                             if method.starts_with("mpv-") {
-                                let resp_json = serde_json::to_string(&args).unwrap();
+                                let resp_json =
+                                    serde_json::to_string(&args).expect("Cannot build response");
                                 player_tx.send(resp_json).ok();
                             } else {
                                 match method {
@@ -172,7 +173,10 @@ impl MainWindow {
                                         hide_splash_sender.notice();
                                         if args.len() > 1 {
                                             // TODO: Make this modal dialog
-                                            eprintln!("Web App Error: {}", args[1].as_str().unwrap_or("Unknown error"));
+                                            eprintln!(
+                                                "Web App Error: {}",
+                                                args[1].as_str().unwrap_or("Unknown error")
+                                            );
                                         }
                                     }
                                     _ => eprintln!("Unsupported command {:?}", args),
