@@ -182,6 +182,24 @@ impl MainWindow {
                                             );
                                         }
                                     }
+                                    "open-external" => {
+                                        if args.len() > 1 {
+                                            if let Some(arg) = args[1].as_str() {
+                                                // FIXME: THIS IS NOT SAFE BY ANY MEANS
+                                                // open::that("calc").ok(); does exactly that
+                                                let arg_lc = arg.to_lowercase();
+                                                if arg_lc.starts_with("http://")
+                                                    || arg_lc.starts_with("https://")
+                                                    || arg_lc.starts_with("rtp://")
+                                                    || arg_lc.starts_with("rtps://")
+                                                    || arg_lc.starts_with("ftp://")
+                                                    || arg_lc.starts_with("ipfs://")
+                                                {
+                                                    open::that(arg).ok();
+                                                }
+                                            }
+                                        }
+                                    }
                                     _ => eprintln!("Unsupported command {:?}", args),
                                 }
                             }

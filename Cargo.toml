@@ -16,6 +16,7 @@ mpv = "0.2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 structopt = "0.3"
+open = "1"
 
 [build-dependencies]
 embed-resource = "1.3"
