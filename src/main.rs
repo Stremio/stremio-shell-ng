@@ -1,5 +1,8 @@
 use native_windows_gui::{self as nwg, NativeUi};
+use std::ptr;
 use structopt::StructOpt;
+use winapi::um::wincon::GetConsoleWindow;
+use winapi::um::winuser::{ShowWindow, SW_HIDE};
 
 mod stremio_app;
 use crate::stremio_app::{stremio_server::StremioServer, MainWindow};
@@ -16,6 +19,14 @@ struct Opt {
 }
 
 fn main() {
+    // Hide the terminal window
+    let window = unsafe { GetConsoleWindow() };
+    if window != ptr::null_mut() {
+        unsafe {
+            ShowWindow(window, SW_HIDE);
+        }
+    }
+
     // native-windows-gui has some basic high DPI support with the high-dpi
     // feature. It supports the "System DPI Awareness" mode, but not the more
     // advanced Per-Monitor (v2) DPI Awareness modes.
