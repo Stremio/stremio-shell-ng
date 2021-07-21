@@ -78,13 +78,13 @@ impl PartialUi for WebView {
                         } else {
                             eprintln!("failed to get interface to controller2");
                         }
-                        let webview = controller
+                    let webview = controller
                             .get_webview()
                             .expect("Cannot obtain webview from controller");
-                        if let Some(endpoint) = endpoint.get() {
-                        if let Err(e) = webview
+                    if let Some(endpoint) = endpoint.get() {
+                        if let Err(_) = webview
                             .navigate(endpoint.as_str()) {
-                                eprintln!("Cannot load WEB UI at '{}': {:?}", &endpoint, e);
+                                tx_web.clone().send(format!(r#"{{"id":1,"args":["app-error","Cannot load WEB UI at '{}'"]}}"#, &endpoint).to_string()).ok();
                         };
                     }
                         webview
@@ -92,7 +92,7 @@ impl PartialUi for WebView {
                                 r##"
                             window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                             window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
-                            window.onload=()=>initShellComm();
+                            window.onload=()=>{try{initShellComm();}catch(e){window.chrome.webview.postMessage('{"id":1,"args":["app-error","'+e.message+'"]}')}};
                             "##,
                                 |_| Ok(()),
                             )

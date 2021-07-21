@@ -44,13 +44,30 @@ struct RPCResponse {
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub webui_url: String,
-    #[nwg_control(title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
-    #[nwg_events( OnWindowClose: [MainWindow::on_quit], OnInit: [MainWindow::on_init], OnMinMaxInfo: [MainWindow::on_min_max(SELF, EVT_DATA)] )]
+    #[nwg_resource]
+    pub embed: nwg::EmbedResource,
+    #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
+    pub window_icon: nwg::Icon,
+    #[nwg_control(icon: Some(&data.window_icon), title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
+    #[nwg_events( OnWindowClose: [Self::on_quit], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
     pub webview: WebView,
     #[nwg_partial(parent: window)]
     pub player: Player,
+    #[nwg_resource(size: Some((300,300)), source_embed: Some(&data.embed), source_embed_str: Some("SPLASHIMAGE"))]
+    pub splash_image: nwg::Icon,
+    #[nwg_control(icon: Some(&data.splash_image))]
+    pub splash: nwg::ImageFrame,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
+    pub toggle_fullscreen_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_quit_notice] )]
+    pub quit_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_hide_splash_notice] )]
+    pub hide_splash_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -101,6 +118,9 @@ impl MainWindow {
             } // recv
         }); // thread
 
+        let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
+        let quit_sender = self.quit_notice.sender();
+        let hide_splash_sender = self.hide_splash_notice.sender();
         thread::spawn(move || loop {
             let rx = web_rx.lock().unwrap();
             if let Ok(msg) = rx.recv() {
@@ -140,7 +160,20 @@ impl MainWindow {
                             } else {
                                 match method {
                                     "toggle-fullscreen" => {
-                                        println!("full screen toggle requested");
+                                        toggle_fullscreen_sender.notice();
+                                    }
+                                    "quit" => {
+                                        quit_sender.notice();
+                                    }
+                                    "app-ready" => {
+                                        hide_splash_sender.notice();
+                                    }
+                                    "app-error" => {
+                                        hide_splash_sender.notice();
+                                        if args.len() > 1 {
+                                            // TODO: Make this modal dialog
+                                            eprintln!("Web App Error: {}", args[1].as_str().unwrap_or("Unknown error"));
+                                        }
                                     }
                                     _ => eprintln!("Unsupported command {:?}", args),
                                 }
@@ -156,6 +189,19 @@ impl MainWindow {
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
         data.set_min_size(Self::MIN_WIDTH, Self::MIN_HEIGHT);
+    }
+    fn on_paint(&self) {
+        let (w, h) = self.window.size();
+        self.splash.set_size(w, h);
+    }
+    fn on_toggle_fullscreen_notice(&self) {
+        println!("full screen toggle requested");
+    }
+    fn on_quit_notice(&self) {
+        self.on_quit();
+    }
+    fn on_hide_splash_notice(&self) {
+        self.splash.set_visible(false);
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();

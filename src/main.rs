@@ -25,6 +25,7 @@ fn main() {
     unsafe {
         nwg::set_dpi_awareness()
     };
+    nwg::enable_visual_styles();
 
     let opt = Opt::from_args();
 
