@@ -57,7 +57,9 @@ pub struct MainWindow {
     pub player: Player,
     #[nwg_resource(size: Some((300,300)), source_embed: Some(&data.embed), source_embed_str: Some("SPLASHIMAGE"))]
     pub splash_image: nwg::Icon,
-    #[nwg_control(icon: Some(&data.splash_image))]
+    #[nwg_control(parent: window, background_color: Some(Self::BG_COLOR))]
+    pub splash_frame: nwg::ImageFrame,
+    #[nwg_control(parent: splash_frame, background_color: Some(Self::BG_COLOR), icon: Some(&data.splash_image))]
     pub splash: nwg::ImageFrame,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
@@ -71,6 +73,7 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
+    const BG_COLOR: [u8; 3] = [27, 17, 38];
     const MIN_WIDTH: i32 = 1000;
     const MIN_HEIGHT: i32 = 600;
     fn on_init(&self) {
@@ -195,8 +198,13 @@ impl MainWindow {
         data.set_min_size(Self::MIN_WIDTH, Self::MIN_HEIGHT);
     }
     fn on_paint(&self) {
-        let (w, h) = self.window.size();
-        self.splash.set_size(w, h);
+        if self.splash_frame.visible() {
+            let (w, h) = self.window.size();
+            let s = cmp::min(w, h);
+            self.splash_frame.set_size(w, h);
+            self.splash.set_size(s, s);
+            self.splash.set_position(w as i32 / 2 - s as i32 / 2, 0);
+        }
     }
     fn on_toggle_fullscreen_notice(&self) {
         println!("full screen toggle requested");
@@ -205,7 +213,7 @@ impl MainWindow {
         self.on_quit();
     }
     fn on_hide_splash_notice(&self) {
-        self.splash.set_visible(false);
+        self.splash_frame.set_visible(false);
     }
     fn on_quit(&self) {
         nwg::stop_thread_dispatch();
