@@ -56,10 +56,10 @@ pub struct MainWindow {
     #[nwg_partial(parent: window)]
     pub player: Player,
     #[nwg_resource(size: Some((300,300)), source_embed: Some(&data.embed), source_embed_str: Some("SPLASHIMAGE"))]
-    pub splash_image: nwg::Icon,
+    pub splash_image: nwg::Bitmap,
     #[nwg_control(parent: window, background_color: Some(Self::BG_COLOR))]
     pub splash_frame: nwg::ImageFrame,
-    #[nwg_control(parent: splash_frame, background_color: Some(Self::BG_COLOR), icon: Some(&data.splash_image))]
+    #[nwg_control(parent: splash_frame, background_color: Some(Self::BG_COLOR), bitmap: Some(&data.splash_image))]
     pub splash: nwg::ImageFrame,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
