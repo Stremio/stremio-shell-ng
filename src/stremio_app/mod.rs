@@ -1,5 +1,5 @@
-pub mod stremio_app;
-pub use stremio_app::MainWindow;
+pub mod app;
+pub use app::MainWindow;
 pub mod stremio_wevbiew;
 pub use stremio_wevbiew::WebView;
 pub mod stremio_player;

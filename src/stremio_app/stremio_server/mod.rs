@@ -1,2 +1,2 @@
-pub mod stremio_server;
-pub use stremio_server::StremioServer;
+pub mod server;
+pub use server::StremioServer;

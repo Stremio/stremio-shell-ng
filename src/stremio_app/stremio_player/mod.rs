@@ -1,2 +1,2 @@
-pub mod stremio_player;
-pub use stremio_player::Player;
+pub mod player;
+pub use player::Player;
