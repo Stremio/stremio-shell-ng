@@ -1,7 +1,6 @@
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
-use serde::{Deserialize, Serialize};
-use serde_json::{self, json};
+use serde_json;
 use std::cell::RefCell;
 use std::cmp;
 use std::sync::Arc;
@@ -12,57 +11,10 @@ use winapi::um::winuser::{
     WS_EX_WINDOWEDGE, WS_THICKFRAME,
 };
 
+use crate::stremio_app::ipc::{RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
 
-//////////////////////////////////////////
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCRequest {
-    id: u64,
-    args: Option<Vec<serde_json::Value>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCResponseDataTransport {
-    properties: Vec<Vec<String>>,
-    signals: Vec<String>,
-    methods: Vec<Vec<String>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct RPCResponseData {
-    transport: RPCResponseDataTransport,
-}
-
-#[derive(Default, Serialize, Deserialize, Debug, Clone)]
-struct RPCResponse {
-    id: u64,
-    object: String,
-    #[serde(rename = "type")]
-    response_type: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<RPCResponseData>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    args: Option<serde_json::Value>,
-}
-
-impl RPCResponse {
-    fn visibility_change(visible: bool, visibility: u32, is_full_screen: bool) -> String {
-        let resp = RPCResponse {
-            id: 1,
-            object: "transport".to_string(),
-            response_type: 1,
-            args: Some(json!(["win-visibility-changed" ,{
-                "visible": visible,
-                "visibility": visibility,
-                "isFullscreen": is_full_screen
-            }])),
-            ..Default::default()
-        };
-        serde_json::to_string(&resp).expect("Cannot build response")
-    }
-}
-//////////////////////////////////////////
 #[derive(Default)]
 pub struct WindowStyle {
     pub full_screen: bool,

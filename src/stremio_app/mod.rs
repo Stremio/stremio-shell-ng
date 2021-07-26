@@ -6,3 +6,5 @@ pub mod stremio_player;
 pub use stremio_player::Player;
 pub mod stremio_server;
 pub use stremio_server::StremioServer;
+pub mod ipc;
+pub use ipc::{Channel, RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};

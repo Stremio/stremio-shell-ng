@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use crate::stremio_app::ipc;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct MpvEvent {
@@ -48,7 +49,7 @@ impl MpvEvent {
 
 #[derive(Default)]
 pub struct Player {
-    pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
+    pub channel: ipc::Channel,
 }
 
 impl PartialUi for Player {

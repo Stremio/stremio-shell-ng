@@ -13,12 +13,13 @@ use urlencoding::decode;
 use webview2::Controller;
 use winapi::shared::windef::HWND__;
 use winapi::um::winuser::*;
+use crate::stremio_app::ipc;
 
 #[derive(Default)]
 pub struct WebView {
     pub endpoint: Rc<OnceCell<String>>,
     controller: Rc<OnceCell<Controller>>,
-    pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
+    pub channel: ipc::Channel,
     notice: nwg::Notice,
     compute: RefCell<Option<thread::JoinHandle<()>>>,
     message_queue: Arc<Mutex<VecDeque<String>>>,
