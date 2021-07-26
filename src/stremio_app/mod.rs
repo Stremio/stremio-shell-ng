@@ -8,3 +8,6 @@ pub mod stremio_server;
 pub use stremio_server::StremioServer;
 pub mod ipc;
 pub use ipc::{Channel, RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
+pub mod systray;
+pub use systray::SystemTray;
+

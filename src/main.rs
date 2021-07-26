@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate bitflags;
 use native_windows_gui::{self as nwg, NativeUi};
 use structopt::StructOpt;
 use winapi::um::wincon::GetConsoleWindow;

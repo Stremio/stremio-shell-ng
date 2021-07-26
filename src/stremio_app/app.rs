@@ -5,17 +5,28 @@ use std::cell::RefCell;
 use std::cmp;
 use std::sync::Arc;
 use std::thread;
+use winapi::shared::windef::HWND__;
 use winapi::um::winuser::{
-    GetSystemMetrics, GetWindowLongA, SetWindowLongA, GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN,
-    SM_CYSCREEN, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
-    WS_EX_WINDOWEDGE, WS_THICKFRAME,
+    GetActiveWindow, GetSystemMetrics, GetWindowLongA, IsIconic, IsZoomed, SetWindowLongA,
+    GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN, SM_CYSCREEN, WS_CAPTION, WS_EX_CLIENTEDGE,
+    WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE, WS_THICKFRAME,
 };
 
 use crate::stremio_app::ipc::{RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
+use crate::stremio_app::systray::SystemTray;
 
-#[derive(Default)]
+bitflags! {
+    struct WindowState: u8 {
+        const MINIMIZED = 0x01;
+        const MAXIMIZED = 0x02;
+        const FULL_SCREEN = 0x04;
+        const ACTIVE = 0x08;
+    }
+}
+
+#[derive(Default, Clone)]
 pub struct WindowStyle {
     pub full_screen: bool,
     pub pos: (i32, i32),
@@ -23,6 +34,34 @@ pub struct WindowStyle {
     pub style: i32,
     pub ex_style: i32,
 }
+
+impl WindowStyle {
+    pub fn get_window_state(self, hwnd: *mut HWND__) -> u32 {
+        let mut visibility: WindowState = WindowState::empty();
+        visibility |= if 0 != unsafe { IsIconic(hwnd) } {
+            WindowState::MINIMIZED
+        } else {
+            WindowState::empty()
+        };
+        visibility |= if 0 != unsafe { IsZoomed(hwnd) } {
+            WindowState::MAXIMIZED
+        } else {
+            WindowState::empty()
+        };
+        visibility |= if hwnd == unsafe { GetActiveWindow() } {
+            WindowState::ACTIVE
+        } else {
+            WindowState::empty()
+        };
+        visibility |= if self.full_screen {
+            WindowState::FULL_SCREEN
+        } else {
+            WindowState::empty()
+        };
+        visibility.bits() as u32
+    }
+}
+
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub webui_url: String,
@@ -32,8 +71,11 @@ pub struct MainWindow {
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
     #[nwg_control(icon: Some(&data.window_icon), title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
-    #[nwg_events( OnWindowClose: [Self::on_quit], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)] )]
+    #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMaximize: [Self::on_maximize] )]
     pub window: nwg::Window,
+    #[nwg_partial(parent: window)]
+    #[nwg_events((tray_exit, OnMenuItemSelected): [Self::on_quit_notice], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide]) ]
+    pub tray: SystemTray,
     #[nwg_partial(parent: window)]
     pub webview: WebView,
     #[nwg_partial(parent: window)]
@@ -72,6 +114,8 @@ impl MainWindow {
         self.window
             .set_size(dimensions.0 as u32, dimensions.1 as u32);
         self.window.set_position(x, y);
+
+        self.tray.tray_show_hide.set_checked(true);
 
         let player_channel = self.player.channel.borrow();
         let (player_tx, player_rx) = player_channel
@@ -250,6 +294,8 @@ impl MainWindow {
                     });
                 saved_style.full_screen = true;
             }
+            let visibility = saved_style.clone().get_window_state(hwnd);
+
             let web_channel = self.webview.channel.borrow();
             let (web_tx, _) = web_channel
                 .as_ref()
@@ -258,19 +304,52 @@ impl MainWindow {
             web_tx_app
                 .send(RPCResponse::visibility_change(
                     true,
-                    1,
+                    visibility,
                     saved_style.full_screen,
                 ))
                 .ok();
         }
     }
     fn on_quit_notice(&self) {
-        self.on_quit();
+        nwg::stop_thread_dispatch();
     }
     fn on_hide_splash_notice(&self) {
         self.splash_frame.set_visible(false);
     }
-    fn on_quit(&self) {
-        nwg::stop_thread_dispatch();
+    fn on_maximize(&self) {}
+    fn on_show_hide(&self) {
+        self.window.set_visible(!self.window.visible());
+        self.tray.tray_show_hide.set_checked(self.window.visible());
+        let web_channel = self.webview.channel.borrow();
+        let (web_tx, _) = web_channel
+            .as_ref()
+            .expect("Cannont obtain communication channel for the Web UI");
+        let web_tx_app = web_tx.clone();
+        let saved_style = self.saved_window_style.borrow();
+        web_tx_app
+            .send(RPCResponse::visibility_change(
+                self.window.visible(),
+                1,
+                saved_style.full_screen,
+            ))
+            .ok();
+    }
+    fn on_quit(&self, data: &nwg::EventData) {
+        if let Some(hwnd) = self.window.handle.hwnd() {
+            if let nwg::EventData::OnWindowClose(data) = data {
+                data.close(false);
+            }
+            self.window.set_visible(false);
+            let web_channel = self.webview.channel.borrow();
+            let (web_tx, _) = web_channel
+                .as_ref()
+                .expect("Cannont obtain communication channel for the Web UI");
+            let web_tx_app = web_tx.clone();
+            let saved_style = self.saved_window_style.borrow();
+            let visibility = saved_style.clone().get_window_state(hwnd);
+            web_tx_app
+                .send(RPCResponse::visibility_change(false, visibility, false))
+                .ok();
+        }
     }
 }

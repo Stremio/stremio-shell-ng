@@ -500,6 +500,7 @@ dependencies = [
 name = "stremio-shell-ng"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "embed-resource",
  "mpv",
  "native-windows-derive",
