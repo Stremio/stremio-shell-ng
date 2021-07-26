@@ -2,6 +2,7 @@ use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
 use serde_json::json;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::mem;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -18,7 +19,7 @@ pub struct WebView {
     pub channel: RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>,
     notice: nwg::Notice,
     compute: RefCell<Option<thread::JoinHandle<()>>>,
-    message_queue: Arc<Mutex<Vec<String>>>,
+    message_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl WebView {
@@ -82,9 +83,9 @@ impl PartialUi for WebView {
                             .get_webview()
                             .expect("Cannot obtain webview from controller");
                     if let Some(endpoint) = endpoint.get() {
-                        if let Err(_) = webview
-                            .navigate(endpoint.as_str()) {
-                                tx_web.clone().send(format!(r#"{{"id":1,"args":["app-error","Cannot load WEB UI at '{}'"]}}"#, &endpoint).to_string()).ok();
+                        if webview
+                            .navigate(endpoint.as_str()).is_err() {
+                                tx_web.clone().send(format!(r#"{{"id":1,"args":["app-error","Cannot load WEB UI at '{}'"]}}"#, &endpoint)).ok();
                         };
                     }
                         webview
@@ -137,7 +138,7 @@ impl PartialUi for WebView {
         *data.compute.borrow_mut() = Some(thread::spawn(move || loop {
             if let Ok(msg) = rx.recv() {
                 let mut message = message.lock().unwrap();
-                message.push(msg);
+                message.push_back(msg);
                 sender.notice();
             }
         }));
@@ -165,10 +166,9 @@ impl PartialUi for WebView {
                 if let Some(controller) = self.controller.get() {
                     let webview = controller.get_webview().expect("Cannot get vebview");
                     let mut message_queue = message_queue.lock().unwrap();
-                    for msg in message_queue.iter() {
-                        webview.post_web_message_as_string(msg).ok();
+                    for msg in message_queue.drain(..) {
+                        webview.post_web_message_as_string(msg.as_str()).ok();
                     }
-                    *message_queue = vec![];
                 }
             }
             _ => {}

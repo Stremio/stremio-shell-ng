@@ -1,5 +1,4 @@
 use native_windows_gui::{self as nwg, NativeUi};
-use std::ptr;
 use structopt::StructOpt;
 use winapi::um::wincon::GetConsoleWindow;
 use winapi::um::winuser::{ShowWindow, SW_HIDE};
@@ -21,7 +20,7 @@ struct Opt {
 fn main() {
     // Hide the terminal window
     let window = unsafe { GetConsoleWindow() };
-    if window != ptr::null_mut() {
+    if !window.is_null() {
         unsafe {
             ShowWindow(window, SW_HIDE);
         }
