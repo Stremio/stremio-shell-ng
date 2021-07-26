@@ -1,10 +1,16 @@
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self, json};
+use std::cell::RefCell;
 use std::cmp;
 use std::sync::Arc;
 use std::thread;
+use winapi::um::winuser::{
+    GetSystemMetrics, GetWindowLongA, SetWindowLongA, GWL_EXSTYLE, GWL_STYLE, SM_CXSCREEN,
+    SM_CYSCREEN, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
+    WS_EX_WINDOWEDGE, WS_THICKFRAME,
+};
 
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
@@ -39,11 +45,36 @@ struct RPCResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<serde_json::Value>,
 }
-//////////////////////////////////////////
 
+impl RPCResponse {
+    fn visibility_change(visible: bool, visibility: u32, is_full_screen: bool) -> String {
+        let resp = RPCResponse {
+            id: 1,
+            object: "transport".to_string(),
+            response_type: 1,
+            args: Some(json!(["win-visibility-changed" ,{
+                "visible": visible,
+                "visibility": visibility,
+                "isFullscreen": is_full_screen
+            }])),
+            ..Default::default()
+        };
+        serde_json::to_string(&resp).expect("Cannot build response")
+    }
+}
+//////////////////////////////////////////
+#[derive(Default)]
+pub struct WindowStyle {
+    pub full_screen: bool,
+    pub pos: (i32, i32),
+    pub size: (u32, u32),
+    pub style: i32,
+    pub ex_style: i32,
+}
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub webui_url: String,
+    pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
@@ -163,7 +194,7 @@ impl MainWindow {
                                 player_tx.send(resp_json).ok();
                             } else {
                                 match method {
-                                    "toggle-fullscreen" => {
+                                    "win-set-visibility" => {
                                         toggle_fullscreen_sender.notice();
                                     }
                                     "quit" => {
@@ -171,6 +202,9 @@ impl MainWindow {
                                     }
                                     "app-ready" => {
                                         hide_splash_sender.notice();
+                                        web_tx_web
+                                            .send(RPCResponse::visibility_change(true, 1, false))
+                                            .ok();
                                     }
                                     "app-error" => {
                                         hide_splash_sender.notice();
@@ -225,7 +259,58 @@ impl MainWindow {
         }
     }
     fn on_toggle_fullscreen_notice(&self) {
-        println!("full screen toggle requested");
+        if let Some(hwnd) = self.window.handle.hwnd() {
+            let mut saved_style = self.saved_window_style.borrow_mut();
+            if saved_style.full_screen {
+                unsafe {
+                    SetWindowLongA(hwnd, GWL_STYLE, saved_style.style);
+                    SetWindowLongA(hwnd, GWL_EXSTYLE, saved_style.ex_style);
+                }
+                self.window
+                    .set_position(saved_style.pos.0, saved_style.pos.1);
+                self.window.set_size(saved_style.size.0, saved_style.size.1);
+                saved_style.full_screen = false;
+            } else {
+                saved_style.pos = self.window.position();
+                saved_style.size = self.window.size();
+                unsafe {
+                    saved_style.style = GetWindowLongA(hwnd, GWL_STYLE);
+                    saved_style.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
+                    SetWindowLongA(
+                        hwnd,
+                        GWL_STYLE,
+                        saved_style.style & !(WS_CAPTION as i32 | WS_THICKFRAME as i32),
+                    );
+                    SetWindowLongA(
+                        hwnd,
+                        GWL_EXSTYLE,
+                        saved_style.ex_style
+                            & !(WS_EX_DLGMODALFRAME as i32
+                                | WS_EX_WINDOWEDGE as i32
+                                | WS_EX_CLIENTEDGE as i32
+                                | WS_EX_STATICEDGE as i32),
+                    );
+                }
+                self.window.set_position(0, 0);
+                self.window
+                    .set_size(unsafe { GetSystemMetrics(SM_CXSCREEN) as u32 }, unsafe {
+                        GetSystemMetrics(SM_CYSCREEN) as u32
+                    });
+                saved_style.full_screen = true;
+            }
+            let web_channel = self.webview.channel.borrow();
+            let (web_tx, _) = web_channel
+                .as_ref()
+                .expect("Cannont obtain communication channel for the Web UI");
+            let web_tx_app = web_tx.clone();
+            web_tx_app
+                .send(RPCResponse::visibility_change(
+                    true,
+                    1,
+                    saved_style.full_screen,
+                ))
+                .ok();
+        }
     }
     fn on_quit_notice(&self) {
         self.on_quit();

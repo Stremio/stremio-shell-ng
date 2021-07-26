@@ -98,7 +98,6 @@ impl PartialUi for WebView {
                                 |_| Ok(()),
                             )
                             .ok();
-                        let tx_fs = tx_web.clone();
                         webview.add_web_message_received(move |_w, msg| {
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
@@ -112,10 +111,6 @@ impl PartialUi for WebView {
                             });
                             tx_drag_drop.send(data.to_string()).ok();
                             msg.put_handled(true).ok();
-                            Ok(())
-                        }).ok();
-                        webview.add_contains_full_screen_element_changed(move |_w| {
-                            tx_fs.send(r#"{"id":1, "args": ["toggle-fullscreen"]}"#.to_string()).ok();
                             Ok(())
                         }).ok();
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
@@ -153,6 +148,16 @@ impl PartialUi for WebView {
     ) {
         use nwg::Event as E;
         match evt {
+            // FIXME: Hack to focus the webview when pressing alt-tab.
+            // This doesn't work if you click the window's title with
+            // the mouse. A better solution is needed
+            E::OnKeyPress | E::OnKeyRelease => {
+                if let Some(controller) = self.controller.get() {
+                    controller
+                        .move_focus(webview2::MoveFocusReason::Programmatic)
+                        .ok();
+                }
+            }
             E::OnResize | E::OnWindowMaximize => {
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }
