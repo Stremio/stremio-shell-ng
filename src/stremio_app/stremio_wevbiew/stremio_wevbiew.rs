@@ -106,7 +106,7 @@ impl PartialUi for WebView {
                             Ok(())
                         }).ok();
                         webview.add_new_window_requested(move |_w, msg| {
-                            if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(&str.as_str()).ok().map(Cow::into_owned)}) {
+                            if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(str.as_str()).ok().map(Cow::into_owned)}) {
                                 let data = json!({
                                     "object": "transport",
                                     "type": 1,
