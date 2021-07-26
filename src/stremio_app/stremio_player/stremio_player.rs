@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::collections::VecDeque;
 use crate::stremio_app::ipc;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
@@ -50,6 +51,7 @@ impl MpvEvent {
 #[derive(Default)]
 pub struct Player {
     pub channel: ipc::Channel,
+    message_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl PartialUi for Player {
@@ -65,6 +67,7 @@ impl PartialUi for Player {
             .into()
             .hwnd()
             .expect("Cannot obtain window handle") as i64;
+        let message = data.message_queue.clone();
         thread::spawn(move || {
             let mut mpv_builder =
                 mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
@@ -93,13 +96,12 @@ impl PartialUi for Player {
             //mpv_builder.set_option("quiet", "yes").expect("failed setting msg-level");
             let mut mpv = mpv_builder.build().expect("Cannot build MPV");
 
-            let message_queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-            let thread_messages = Arc::clone(&message_queue);
+            let thread_messages = Arc::clone(&message);
 
             thread::spawn(move || loop {
                 if let Ok(msg) = rx.recv() {
                     let mut messages = thread_messages.lock().unwrap();
-                    messages.push(msg);
+                    messages.push_back(msg);
                 }
             });
 
@@ -146,10 +148,10 @@ impl PartialUi for Player {
                     }
                 } // event processing
 
-                let mut in_message = message_queue.lock().unwrap();
-                for msg in in_message.iter() {
+                let mut in_message = message.lock().unwrap();
+                for msg in in_message.drain(..) {
                     let (command, data): (String, serde_json::Value) =
-                        serde_json::from_str(msg).unwrap();
+                        serde_json::from_str(msg.as_str()).unwrap();
                     match command.as_str() {
                         "mpv-observe-prop" => {
                             if let Some(property) = data.as_str() {
@@ -227,7 +229,6 @@ impl PartialUi for Player {
                     // mpv.command(&["stop"]).ok();
                     // mpv.set_property("paused", true).ok();
                 }
-                *in_message = vec![];
             }
         });
 
