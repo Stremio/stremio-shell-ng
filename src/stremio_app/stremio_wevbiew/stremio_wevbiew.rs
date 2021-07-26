@@ -1,6 +1,7 @@
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
 use serde_json::json;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem;
@@ -8,6 +9,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use urlencoding::decode;
 use webview2::Controller;
 use winapi::shared::windef::HWND__;
 use winapi::um::winuser::*;
@@ -104,13 +106,15 @@ impl PartialUi for WebView {
                             Ok(())
                         }).ok();
                         webview.add_new_window_requested(move |_w, msg| {
-                            let data = json!({
+                            if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(&str.as_str()).ok().map(Cow::into_owned)}) {
+                                let data = json!({
                                     "object": "transport",
                                     "type": 1,
-                                    "args": ["dragdrop" ,[msg.get_uri().unwrap()]]
-                            });
-                            tx_drag_drop.send(data.to_string()).ok();
-                            msg.put_handled(true).ok();
+                                    "args": ["dragdrop" ,[file]]
+                                });
+                                tx_drag_drop.send(data.to_string()).ok();
+                                msg.put_handled(true).ok();
+                            }
                             Ok(())
                         }).ok();
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
