@@ -156,16 +156,11 @@ impl MainWindow {
         thread::spawn(move || loop {
             let rx = player_rx.lock().unwrap();
             if let Ok(msg) = rx.recv() {
-                let resp = RPCResponse {
-                    id: 1,
-                    object: "transport".to_string(),
-                    response_type: 1,
-                    args: serde_json::from_str(&msg).ok(),
-                    ..Default::default()
-                };
-                let resp_json =
-                    serde_json::to_string(&resp).expect("Cannot serialize the response");
-                web_tx_player.send(resp_json).ok();
+                web_tx_player
+                    .send(RPCResponse::response_message(
+                        serde_json::from_str(&msg).ok(),
+                    ))
+                    .ok();
             } // recv
         }); // thread
 

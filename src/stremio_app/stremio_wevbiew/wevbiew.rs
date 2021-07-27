@@ -1,3 +1,4 @@
+use crate::stremio_app::ipc;
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
 use serde_json::json;
@@ -13,7 +14,6 @@ use urlencoding::decode;
 use webview2::Controller;
 use winapi::shared::windef::HWND__;
 use winapi::um::winuser::*;
-use crate::stremio_app::ipc;
 
 #[derive(Default)]
 pub struct WebView {
@@ -88,7 +88,7 @@ impl PartialUi for WebView {
                     if let Some(endpoint) = endpoint.get() {
                         if webview
                             .navigate(endpoint.as_str()).is_err() {
-                                tx_web.clone().send(format!(r#"{{"id":1,"args":["app-error","Cannot load WEB UI at '{}'"]}}"#, &endpoint)).ok();
+                                tx_web.clone().send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
                         };
                     }
                         webview
@@ -110,12 +110,7 @@ impl PartialUi for WebView {
                         }).ok();
                         webview.add_new_window_requested(move |_w, msg| {
                             if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(str.as_str()).ok().map(Cow::into_owned)}) {
-                                let data = json!({
-                                    "object": "transport",
-                                    "type": 1,
-                                    "args": ["dragdrop" ,[file]]
-                                });
-                                tx_drag_drop.send(data.to_string()).ok();
+                                tx_drag_drop.send(ipc::RPCResponse::response_message(Some(json!(["dragdrop" ,[file]])))).ok();
                                 msg.put_handled(true).ok();
                             }
                             Ok(())

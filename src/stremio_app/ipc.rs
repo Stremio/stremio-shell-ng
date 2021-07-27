@@ -37,30 +37,26 @@ pub struct RPCResponse {
 }
 
 impl RPCResponse {
-    pub fn visibility_change(visible: bool, visibility: u32, is_full_screen: bool) -> String {
+    pub fn response_message(msg: Option<serde_json::Value>) -> String {
         let resp = RPCResponse {
             id: 1,
             object: "transport".to_string(),
             response_type: 1,
-            args: Some(json!(["win-visibility-changed" ,{
-                "visible": visible,
-                "visibility": visibility,
-                "isFullscreen": is_full_screen
-            }])),
+            args: msg,
             ..Default::default()
         };
         serde_json::to_string(&resp).expect("Cannot build response")
     }
+    pub fn visibility_change(visible: bool, visibility: u32, is_full_screen: bool) -> String {
+        Self::response_message(Some(json!(["win-visibility-changed" ,{
+            "visible": visible,
+            "visibility": visibility,
+            "isFullscreen": is_full_screen
+        }])))
+    }
     pub fn state_change(state: u32) -> String {
-        let resp = RPCResponse {
-            id: 1,
-            object: "transport".to_string(),
-            response_type: 1,
-            args: Some(json!(["win-state-changed" ,{
-                "state": state,
-            }])),
-            ..Default::default()
-        };
-        serde_json::to_string(&resp).expect("Cannot build response")
+        Self::response_message(Some(json!(["win-state-changed" ,{
+            "state": state,
+        }])))
     }
 }
