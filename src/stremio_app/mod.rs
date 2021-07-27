@@ -10,4 +10,6 @@ pub mod ipc;
 pub use ipc::{Channel, RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
 pub mod systray;
 pub use systray::SystemTray;
+pub mod splash;
+pub use splash::SplashImage;
 

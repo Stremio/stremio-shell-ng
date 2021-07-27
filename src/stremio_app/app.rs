@@ -17,6 +17,7 @@ use crate::stremio_app::ipc::{RPCRequest, RPCResponse, RPCResponseData, RPCRespo
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
 use crate::stremio_app::systray::SystemTray;
+use crate::stremio_app::splash::SplashImage;
 
 // https://doc.qt.io/qt-5/qt.html#WindowState-enum
 bitflags! {
@@ -68,23 +69,19 @@ pub struct MainWindow {
     #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMaximize: [Self::transmit_window_state_change], OnWindowMinimize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
-    #[nwg_events((tray, MousePressLeftUp): [Self::on_show_hide], (tray_exit, OnMenuItemSelected): [Self::on_quit_notice], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
+    #[nwg_events((tray, MousePressLeftUp): [Self::on_show_hide], (tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
     pub tray: SystemTray,
     #[nwg_partial(parent: window)]
     pub webview: WebView,
     #[nwg_partial(parent: window)]
     pub player: Player,
-    #[nwg_resource(size: Some((300,300)), source_embed: Some(&data.embed), source_embed_str: Some("SPLASHIMAGE"))]
-    pub splash_image: nwg::Bitmap,
-    #[nwg_control(parent: window, background_color: Some(Self::BG_COLOR))]
-    pub splash_frame: nwg::ImageFrame,
-    #[nwg_control(parent: splash_frame, background_color: Some(Self::BG_COLOR), bitmap: Some(&data.splash_image))]
-    pub splash: nwg::ImageFrame,
+    #[nwg_partial(parent: window)]
+    pub splash_screen: SplashImage,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
     pub toggle_fullscreen_notice: nwg::Notice,
     #[nwg_control]
-    #[nwg_events(OnNotice: [Self::on_quit_notice] )]
+    #[nwg_events(OnNotice: [nwg::stop_thread_dispatch()] )]
     pub quit_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_hide_splash_notice] )]
@@ -92,7 +89,6 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    const BG_COLOR: [u8; 3] = [27, 17, 38];
     const MIN_WIDTH: i32 = 1000;
     const MIN_HEIGHT: i32 = 600;
     fn transmit_window_full_screen_change(&self, prevent_close: bool) {
@@ -262,12 +258,8 @@ impl MainWindow {
         data.set_min_size(Self::MIN_WIDTH, Self::MIN_HEIGHT);
     }
     fn on_paint(&self) {
-        if self.splash_frame.visible() {
-            let (w, h) = self.window.size();
-            let s = cmp::min(w, h);
-            self.splash_frame.set_size(w, h);
-            self.splash.set_size(s, s);
-            self.splash.set_position(w as i32 / 2 - s as i32 / 2, 0);
+        if self.splash_screen.visible() {
+            self.splash_screen.resize(self.window.size());
         } else {
             self.transmit_window_state_change();
         }
@@ -333,11 +325,8 @@ impl MainWindow {
         }
         self.transmit_window_full_screen_change(true);
     }
-    fn on_quit_notice(&self) {
-        nwg::stop_thread_dispatch();
-    }
     fn on_hide_splash_notice(&self) {
-        self.splash_frame.set_visible(false);
+        self.splash_screen.hide();
     }
     fn on_toggle_topmost(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
