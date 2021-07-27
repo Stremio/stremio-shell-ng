@@ -16,7 +16,7 @@ pub struct SplashImage {
 
 impl SplashImage {
     const BG_COLOR: [u8; 3] = [27, 17, 38];
-    pub fn resize(&self, size:(u32, u32)) {
+    pub fn resize(&self, size: (u32, u32)) {
         let (w, h) = size;
         let s = cmp::min(w, h);
         self.splash_frame.set_size(w, h);
