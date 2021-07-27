@@ -1,3 +1,4 @@
+use std::{cmp, mem};
 use winapi::shared::windef::HWND__;
 use winapi::um::winuser::{
     GetForegroundWindow, GetSystemMetrics, GetWindowLongA, GetWindowRect, IsIconic, IsZoomed,
@@ -6,7 +7,6 @@ use winapi::um::winuser::{
     WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
     WS_THICKFRAME,
 };
-
 // https://doc.qt.io/qt-5/qt.html#WindowState-enum
 bitflags! {
     struct WindowState: u8 {
@@ -21,7 +21,7 @@ bitflags! {
 pub struct WindowStyle {
     pub full_screen: bool,
     pub pos: (i32, i32),
-    pub size: (u32, u32),
+    pub size: (i32, i32),
     pub style: i32,
     pub ex_style: i32,
 }
@@ -43,6 +43,30 @@ impl WindowStyle {
         }
         state.bits() as u32
     }
+    pub fn show_window_at(&self, hwnd: *mut HWND__, pos: *mut HWND__) {
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                pos,
+                self.pos.0,
+                self.pos.1,
+                self.size.0,
+                self.size.1,
+                SWP_FRAMECHANGED,
+            );
+        }
+    }
+    pub fn center_window(&mut self, hwnd: *mut HWND__, min_width: i32, min_height: i32) {
+        let monitor_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let monitor_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        let small_side = cmp::min(monitor_w, monitor_h) * 70 / 100;
+        self.size = (
+            cmp::max(small_side * 16 / 9, min_width),
+            cmp::max(small_side, min_height),
+        );
+        self.pos = ((monitor_w - self.size.0) / 2, (monitor_h - self.size.1) / 2);
+        self.show_window_at(hwnd, HWND_NOTOPMOST);
+    }
     pub fn toggle_full_screen(&mut self, hwnd: *mut HWND__) {
         if self.full_screen {
             let topmost = if self.ex_style as u32 & WS_EX_TOPMOST == WS_EX_TOPMOST {
@@ -53,26 +77,15 @@ impl WindowStyle {
             unsafe {
                 SetWindowLongA(hwnd, GWL_STYLE, self.style);
                 SetWindowLongA(hwnd, GWL_EXSTYLE, self.ex_style);
-                SetWindowPos(
-                    hwnd,
-                    topmost,
-                    self.pos.0,
-                    self.pos.1,
-                    self.size.0 as i32,
-                    self.size.1 as i32,
-                    SWP_FRAMECHANGED,
-                );
             }
+            self.show_window_at(hwnd, topmost);
             self.full_screen = false;
         } else {
             unsafe {
-                let mut rect = std::mem::zeroed();
+                let mut rect = mem::zeroed();
                 GetWindowRect(hwnd, &mut rect);
                 self.pos = (rect.left, rect.top);
-                self.size = (
-                    (rect.right - rect.left) as u32,
-                    (rect.bottom - rect.top) as u32,
-                );
+                self.size = ((rect.right - rect.left), (rect.bottom - rect.top));
                 self.style = GetWindowLongA(hwnd, GWL_STYLE);
                 self.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
                 SetWindowLongA(

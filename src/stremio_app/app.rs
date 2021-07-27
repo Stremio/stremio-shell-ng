@@ -2,7 +2,6 @@ use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use serde_json;
 use std::cell::RefCell;
-use std::cmp;
 use std::sync::Arc;
 use std::thread;
 use winapi::um::winuser::WS_EX_TOPMOST;
@@ -77,17 +76,10 @@ impl MainWindow {
     }
     fn on_init(&self) {
         self.webview.endpoint.set(self.webui_url.clone()).ok();
-        let small_side = cmp::min(nwg::Monitor::width(), nwg::Monitor::height()) * 70 / 100;
-        let dimensions = (
-            cmp::max(small_side * 16 / 9, Self::MIN_WIDTH),
-            cmp::max(small_side, Self::MIN_HEIGHT),
-        );
-        let [total_width, total_height] = [nwg::Monitor::width(), nwg::Monitor::height()];
-        let x = (total_width - dimensions.0) / 2;
-        let y = (total_height - dimensions.1) / 2;
-        self.window
-            .set_size(dimensions.0 as u32, dimensions.1 as u32);
-        self.window.set_position(x, y);
+        if let Some(hwnd) = self.window.handle.hwnd() {
+            let mut saved_style = self.saved_window_style.borrow_mut();
+            saved_style.center_window(hwnd, Self::MIN_WIDTH, Self::MIN_HEIGHT);
+        }
 
         self.tray.tray_show_hide.set_checked(true);
 
