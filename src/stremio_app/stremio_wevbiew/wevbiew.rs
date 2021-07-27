@@ -94,9 +94,11 @@ impl PartialUi for WebView {
                         webview
                             .add_script_to_execute_on_document_created(
                                 r##"
+                            try{if(window.self === window.top) {
                             window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                             window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
                             window.onload=()=>{try{initShellComm();}catch(e){window.chrome.webview.postMessage('{"id":1,"args":["app-error","'+e.message+'"]}')}};
+                            }}catch(e){}
                             "##,
                                 |_| Ok(()),
                             )
