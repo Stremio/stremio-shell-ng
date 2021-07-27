@@ -12,6 +12,26 @@ pub struct RPCRequest {
     pub args: Option<Vec<serde_json::Value>>,
 }
 
+impl RPCRequest {
+    pub fn is_handshake(&self) -> bool {
+        self.id == 0
+    }
+    pub fn get_method(&self) -> Option<&str> {
+        self.args
+            .as_ref()
+            .and_then(|args| args.first())
+            .and_then(|arg| arg.as_str())
+    }
+    pub fn get_params(&self) -> Option<serde_json::Value> {
+        self.args.as_ref().and_then(|args| {
+            if args.len() > 1 {
+                Some(args[1].clone())
+            } else {
+                None
+            }
+        })
+    }
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RPCResponseDataTransport {
     pub properties: Vec<Vec<String>>,
@@ -37,6 +57,30 @@ pub struct RPCResponse {
 }
 
 impl RPCResponse {
+    pub fn get_handshake() -> String {
+        let resp = RPCResponse {
+            id: 0,
+            object: "transport".to_string(),
+            response_type: 3,
+            data: Some(RPCResponseData {
+                transport: RPCResponseDataTransport {
+                    properties: vec![
+                        vec![],
+                        vec![
+                            "".to_string(),
+                            "shellVersion".to_string(),
+                            "".to_string(),
+                            "5.0.0".to_string(),
+                        ],
+                    ],
+                    signals: vec![],
+                    methods: vec![vec!["onEvent".to_string(), "".to_string()]],
+                },
+            }),
+            ..Default::default()
+        };
+        serde_json::to_string(&resp).expect("Cannot build response")
+    }
     pub fn response_message(msg: Option<serde_json::Value>) -> String {
         let resp = RPCResponse {
             id: 1,

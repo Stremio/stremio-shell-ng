@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use winapi::um::winuser::WS_EX_TOPMOST;
 
-use crate::stremio_app::ipc::{RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
+use crate::stremio_app::ipc::{RPCRequest, RPCResponse};
 use crate::stremio_app::splash::SplashImage;
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
@@ -114,90 +114,60 @@ impl MainWindow {
         let hide_splash_sender = self.hide_splash_notice.sender();
         thread::spawn(move || loop {
             let rx = web_rx.lock().unwrap();
-            if let Ok(msg) = rx.recv() {
-                if let Ok(msg) = serde_json::from_str::<RPCRequest>(&msg) {
+            if let Some(msg) = rx
+                .recv()
+                .ok()
+                .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())
+            {
+                match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI
-                    if msg.id == 0 {
-                        let resp = RPCResponse {
-                            id: 0,
-                            object: "transport".to_string(),
-                            response_type: 3,
-                            data: Some(RPCResponseData {
-                                transport: RPCResponseDataTransport {
-                                    properties: vec![
-                                        vec![],
-                                        vec![
-                                            "".to_string(),
-                                            "shellVersion".to_string(),
-                                            "".to_string(),
-                                            "5.0.0".to_string(),
-                                        ],
-                                    ],
-                                    signals: vec![],
-                                    methods: vec![vec!["onEvent".to_string(), "".to_string()]],
-                                },
-                            }),
-                            ..Default::default()
-                        };
-                        let resp_json =
-                            serde_json::to_string(&resp).expect("Cannot build response");
-                        web_tx_web.send(resp_json).ok();
-                    } else if let Some(args) = msg.args {
-                        if let Some(method) = args.first() {
-                            let method = method.as_str().unwrap_or("invalid-method");
-                            if method.starts_with("mpv-") {
-                                let resp_json =
-                                    serde_json::to_string(&args).expect("Cannot build response");
-                                player_tx.send(resp_json).ok();
-                            } else {
-                                match method {
-                                    "win-set-visibility" => {
-                                        toggle_fullscreen_sender.notice();
-                                    }
-                                    "quit" => {
-                                        quit_sender.notice();
-                                    }
-                                    "app-ready" => {
-                                        hide_splash_sender.notice();
-                                        web_tx_web
-                                            .send(RPCResponse::visibility_change(true, 1, false))
-                                            .ok();
-                                    }
-                                    "app-error" => {
-                                        hide_splash_sender.notice();
-                                        if args.len() > 1 {
-                                            // TODO: Make this modal dialog
-                                            eprintln!(
-                                                "Web App Error: {}",
-                                                args[1].as_str().unwrap_or("Unknown error")
-                                            );
-                                        }
-                                    }
-                                    "open-external" => {
-                                        if args.len() > 1 {
-                                            if let Some(arg) = args[1].as_str() {
-                                                // FIXME: THIS IS NOT SAFE BY ANY MEANS
-                                                // open::that("calc").ok(); does exactly that
-                                                let arg_lc = arg.to_lowercase();
-                                                if arg_lc.starts_with("http://")
-                                                    || arg_lc.starts_with("https://")
-                                                    || arg_lc.starts_with("rtp://")
-                                                    || arg_lc.starts_with("rtps://")
-                                                    || arg_lc.starts_with("ftp://")
-                                                    || arg_lc.starts_with("ipfs://")
-                                                {
-                                                    open::that(arg).ok();
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => eprintln!("Unsupported command {:?}", args),
-                                }
+                    None if msg.is_handshake() => {
+                        web_tx_web.send(RPCResponse::get_handshake()).ok();
+                    }
+                    Some("win-set-visibility") => toggle_fullscreen_sender.notice(),
+                    Some("quit") => quit_sender.notice(),
+                    Some("app-ready") => {
+                        hide_splash_sender.notice();
+                        web_tx_web
+                            .send(RPCResponse::visibility_change(true, 1, false))
+                            .ok();
+                    }
+                    Some("app-error") => {
+                        hide_splash_sender.notice();
+                        if let Some(arg) = msg.get_params() {
+                            // TODO: Make this modal dialog
+                            eprintln!("Web App Error: {}", arg.to_string());
+                        }
+                    }
+                    Some("open-external") => {
+                        if let Some(arg) = msg.get_params() {
+                            // FIXME: THIS IS NOT SAFE BY ANY MEANS
+                            // open::that("calc").ok(); does exactly that
+                            let arg = arg.to_string();
+                            let arg_lc = arg.to_lowercase();
+                            if arg_lc.starts_with("http://")
+                                || arg_lc.starts_with("https://")
+                                || arg_lc.starts_with("rtp://")
+                                || arg_lc.starts_with("rtps://")
+                                || arg_lc.starts_with("ftp://")
+                                || arg_lc.starts_with("ipfs://")
+                            {
+                                open::that(arg).ok();
                             }
                         }
                     }
-                } else {
-                    eprintln!("Web UI sent invalid JSON: {:?}", msg);
+                    Some(player_command) if player_command.starts_with("mpv-") => {
+                        // FIXME: filter out the run command
+                        let resp_json = serde_json::to_string(
+                            &msg.args.expect("Cannot have method without args"),
+                        )
+                        .expect("Cannot build response");
+                        player_tx.send(resp_json).ok();
+                    }
+                    Some(unknown) => {
+                        eprintln!("Unsupported command {}({:?})", unknown, msg.get_params())
+                    }
+                    None => {}
                 }
             } // recv
         }); // thread
