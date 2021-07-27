@@ -65,7 +65,7 @@ impl PartialUi for WebView {
         let endpoint = data.endpoint.clone();
         let hwnd = hwnd as *mut HWND__;
         let result = webview2::EnvironmentBuilder::new()
-            .with_additional_browser_arguments("--disable-gpu")
+            .with_additional_browser_arguments("--disable-gpu --autoplay-policy=no-user-gesture-required")
             .build(move |env| {
                 env.expect("Cannot obtain webview environment")
                     .create_controller(hwnd, move |controller| {
