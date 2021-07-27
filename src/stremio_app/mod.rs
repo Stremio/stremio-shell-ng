@@ -12,4 +12,5 @@ pub mod systray;
 pub use systray::SystemTray;
 pub mod splash;
 pub use splash::SplashImage;
-
+pub mod window_helper;
+pub use window_helper::WindowStyle;

@@ -5,57 +5,14 @@ use std::cell::RefCell;
 use std::cmp;
 use std::sync::Arc;
 use std::thread;
-use winapi::shared::windef::HWND__;
-use winapi::um::winuser::{
-    GetForegroundWindow, GetSystemMetrics, GetWindowLongA, IsIconic, IsZoomed, SetWindowLongA,
-    SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
-    WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_THICKFRAME,
-};
+use winapi::um::winuser::WS_EX_TOPMOST;
 
 use crate::stremio_app::ipc::{RPCRequest, RPCResponse, RPCResponseData, RPCResponseDataTransport};
+use crate::stremio_app::splash::SplashImage;
 use crate::stremio_app::stremio_player::Player;
 use crate::stremio_app::stremio_wevbiew::WebView;
 use crate::stremio_app::systray::SystemTray;
-use crate::stremio_app::splash::SplashImage;
-
-// https://doc.qt.io/qt-5/qt.html#WindowState-enum
-bitflags! {
-    struct WindowState: u8 {
-        const MINIMIZED = 0x01;
-        const MAXIMIZED = 0x02;
-        const FULL_SCREEN = 0x04;
-        const ACTIVE = 0x08;
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct WindowStyle {
-    pub full_screen: bool,
-    pub pos: (i32, i32),
-    pub size: (u32, u32),
-    pub style: i32,
-    pub ex_style: i32,
-}
-
-impl WindowStyle {
-    pub fn get_window_state(self, hwnd: *mut HWND__) -> u32 {
-        let mut state: WindowState = WindowState::empty();
-        if 0 != unsafe { IsIconic(hwnd) } {
-            state |= WindowState::MINIMIZED;
-        }
-        if 0 != unsafe { IsZoomed(hwnd) } {
-            state |= WindowState::MAXIMIZED;
-        }
-        if hwnd == unsafe { GetForegroundWindow() } {
-            state |= WindowState::ACTIVE
-        }
-        if self.full_screen {
-            state |= WindowState::FULL_SCREEN;
-        }
-        state.bits() as u32
-    }
-}
+use crate::stremio_app::window_helper::WindowStyle;
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
@@ -267,61 +224,11 @@ impl MainWindow {
     fn on_toggle_fullscreen_notice(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
             let mut saved_style = self.saved_window_style.borrow_mut();
-            if saved_style.full_screen {
-                let topmost = if saved_style.ex_style as u32 & WS_EX_TOPMOST == WS_EX_TOPMOST {
-                    HWND_TOPMOST
-                } else {
-                    HWND_NOTOPMOST
-                };
-                unsafe {
-                    SetWindowLongA(hwnd, GWL_STYLE, saved_style.style);
-                    SetWindowLongA(hwnd, GWL_EXSTYLE, saved_style.ex_style);
-                    SetWindowPos(
-                        hwnd,
-                        topmost,
-                        saved_style.pos.0,
-                        saved_style.pos.1,
-                        saved_style.size.0 as i32,
-                        saved_style.size.1 as i32,
-                        SWP_FRAMECHANGED,
-                    );
-                }
-                saved_style.full_screen = false;
-                self.tray.tray_topmost.set_enabled(true);
-                self.tray.tray_topmost.set_checked(topmost == HWND_TOPMOST);
-            } else {
-                saved_style.pos = self.window.position();
-                saved_style.size = self.window.size();
-                unsafe {
-                    saved_style.style = GetWindowLongA(hwnd, GWL_STYLE);
-                    saved_style.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
-                    SetWindowLongA(
-                        hwnd,
-                        GWL_STYLE,
-                        saved_style.style & !(WS_CAPTION as i32 | WS_THICKFRAME as i32),
-                    );
-                    SetWindowLongA(
-                        hwnd,
-                        GWL_EXSTYLE,
-                        saved_style.ex_style
-                            & !(WS_EX_DLGMODALFRAME as i32
-                                | WS_EX_WINDOWEDGE as i32
-                                | WS_EX_CLIENTEDGE as i32
-                                | WS_EX_STATICEDGE as i32),
-                    );
-                    SetWindowPos(
-                        hwnd,
-                        HWND_NOTOPMOST,
-                        0,
-                        0,
-                        GetSystemMetrics(SM_CXSCREEN),
-                        GetSystemMetrics(SM_CYSCREEN),
-                        SWP_FRAMECHANGED,
-                    );
-                }
-                saved_style.full_screen = true;
-                self.tray.tray_topmost.set_enabled(false);
-            }
+            saved_style.toggle_full_screen(hwnd);
+            self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
+            self.tray
+                .tray_topmost
+                .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
         }
         self.transmit_window_full_screen_change(true);
     }
@@ -330,26 +237,8 @@ impl MainWindow {
     }
     fn on_toggle_topmost(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
-            let topmost = if unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST
-                == WS_EX_TOPMOST
-            {
-                HWND_NOTOPMOST
-            } else {
-                HWND_TOPMOST
-            };
-            unsafe {
-                SetWindowPos(
-                    hwnd,
-                    topmost,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
-                );
-            }
             let mut saved_style = self.saved_window_style.borrow_mut();
-            saved_style.ex_style = unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) };
+            saved_style.toggle_topmost(hwnd);
             self.tray
                 .tray_topmost
                 .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
