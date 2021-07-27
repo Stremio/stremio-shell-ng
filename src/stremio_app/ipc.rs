@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{self, json};
 use std::cell::RefCell;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use serde::{Deserialize, Serialize};
-use serde_json::{self, json};
 
 pub type Channel = RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>;
 
@@ -46,6 +46,18 @@ impl RPCResponse {
                 "visible": visible,
                 "visibility": visibility,
                 "isFullscreen": is_full_screen
+            }])),
+            ..Default::default()
+        };
+        serde_json::to_string(&resp).expect("Cannot build response")
+    }
+    pub fn state_change(state: u32) -> String {
+        let resp = RPCResponse {
+            id: 1,
+            object: "transport".to_string(),
+            response_type: 1,
+            args: Some(json!(["win-state-changed" ,{
+                "state": state,
             }])),
             ..Default::default()
         };
