@@ -1,11 +1,11 @@
+use crate::stremio_app::ipc;
 use native_windows_gui::{self as nwg, PartialUi};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::collections::VecDeque;
-use crate::stremio_app::ipc;
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct MpvEvent {
@@ -93,7 +93,9 @@ impl PartialUi for Player {
             mpv_builder
                 .set_option("msg-level", "all=v")
                 .expect("failed setting msg-level");
-            //mpv_builder.set_option("quiet", "yes").expect("failed setting msg-level");
+            mpv_builder
+                .set_option("quiet", "yes")
+                .expect("failed setting msg-level");
             let mut mpv = mpv_builder.build().expect("Cannot build MPV");
 
             let thread_messages = Arc::clone(&message);
@@ -148,6 +150,7 @@ impl PartialUi for Player {
                     }
                 } // event processing
 
+                thread::sleep(std::time::Duration::from_millis(30));
                 let mut in_message = message.lock().unwrap();
                 for msg in in_message.drain(..) {
                     let (command, data): (String, serde_json::Value) =
@@ -224,12 +227,8 @@ impl PartialUi for Player {
                         }
                         _ => {}
                     };
-                    // let video_path = "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4";
-                    // mpv.command(&["loadfile", video_path]).ok();
-                    // mpv.command(&["stop"]).ok();
-                    // mpv.set_property("paused", true).ok();
-                }
-            }
+                } // incoming message drain loop
+            } // main loop
         });
 
         Ok(())
