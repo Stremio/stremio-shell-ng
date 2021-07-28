@@ -100,13 +100,7 @@ impl MainWindow {
         // Read message from player
         thread::spawn(move || loop {
             let rx = player_rx.lock().unwrap();
-            if let Ok(msg) = rx.recv() {
-                web_tx_player
-                    .send(RPCResponse::response_message(
-                        serde_json::from_str(&msg).ok(),
-                    ))
-                    .ok();
-            } // recv
+            rx.iter().map(|msg| web_tx_player.send(msg)).for_each(drop);
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
@@ -157,7 +151,6 @@ impl MainWindow {
                         }
                     }
                     Some(player_command) if player_command.starts_with("mpv-") => {
-                        // FIXME: filter out the run command
                         let resp_json = serde_json::to_string(
                             &msg.args.expect("Cannot have method without args"),
                         )
