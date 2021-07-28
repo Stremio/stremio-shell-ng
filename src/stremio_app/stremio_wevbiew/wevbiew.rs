@@ -160,7 +160,7 @@ impl PartialUi for WebView {
                         .ok();
                 }
             }
-            E::OnResize | E::OnWindowMaximize => {
+            E::OnPaint => {
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }
             E::OnWindowMinimize => {
