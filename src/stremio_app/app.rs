@@ -137,7 +137,7 @@ impl MainWindow {
                         if let Some(arg) = msg.get_params() {
                             // FIXME: THIS IS NOT SAFE BY ANY MEANS
                             // open::that("calc").ok(); does exactly that
-                            let arg = arg.to_string();
+                            let arg = arg.as_str().unwrap_or("");
                             let arg_lc = arg.to_lowercase();
                             if arg_lc.starts_with("http://")
                                 || arg_lc.starts_with("https://")
