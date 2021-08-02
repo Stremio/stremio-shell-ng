@@ -2,19 +2,18 @@ use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
 use native_windows_gui::{self as nwg, PartialUi};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::stremio_app::stremio_player::communication::{
-    PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
+use crate::stremio_app::stremio_player::{
+    InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
+    PropKey, PropVal,
 };
 
 #[derive(Default)]
 pub struct Player {
     pub channel: ipc::Channel,
-    message_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl PartialUi for Player {
@@ -30,7 +29,6 @@ impl PartialUi for Player {
             .into()
             .hwnd()
             .expect("Cannot obtain window handle") as i64;
-        let message = data.message_queue.clone();
         thread::spawn(move || {
             let mut mpv_builder =
                 mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
@@ -51,28 +49,22 @@ impl PartialUi for Player {
                 .try_hardware_decoding()
                 .expect("failed setting hwdec");
             mpv_builder
+                .set_option("title", "Stremio")
+                .expect("failed setting title");
+            mpv_builder
                 .set_option("terminal", "yes")
                 .expect("failed setting terminal");
             mpv_builder
-                .set_option("msg-level", "all=v")
+                .set_option("msg-level", "all=no,cplayer=debug")
                 .expect("failed setting msg-level");
             mpv_builder
                 .set_option("quiet", "yes")
                 .expect("failed setting msg-level");
             let mut mpv = mpv_builder.build().expect("Cannot build MPV");
 
-            let thread_messages = Arc::clone(&message);
-
-            thread::spawn(move || loop {
-                if let Ok(msg) = rx.recv() {
-                    let mut messages = thread_messages.lock().unwrap();
-                    messages.push_back(msg);
-                }
-            });
-
             'main: loop {
                 // wait up to X seconds for an event.
-                while let Some(event) = mpv.wait_event(0.03) {
+                while let Some(event) = mpv.wait_event(0.0) {
                     // even if you don't do anything with the events, it is still necessary to empty
                     // the event loop
 
@@ -105,90 +97,49 @@ impl PartialUi for Player {
                 } // event processing
 
                 thread::sleep(std::time::Duration::from_millis(30));
-                let mut in_message = message.lock().unwrap();
-                for msg in in_message.drain(..) {
-                    let (command, data): (String, serde_json::Value) =
-                        serde_json::from_str(msg.as_str()).unwrap();
-                    match command.as_str() {
-                        "mpv-observe-prop" => {
-                            let property = data.as_str().unwrap_or_default();
-                            match property {
-                                "pause" | "paused-for-cache" | "seeking" | "eof-reached" => {
-                                    mpv.observe_property::<bool>(property, 0).ok();
-                                }
-                                "aid" | "vid" | "sid" => {
-                                    mpv.observe_property::<i64>(property, 0).ok();
-                                }
-                                "time-pos"
-                                | "volume"
-                                | "duration"
-                                | "sub-scale"
-                                | "cache-buffering-state"
-                                | "sub-pos" => {
-                                    mpv.observe_property::<f64>(property, 0).ok();
-                                }
-                                "path" | "mpv-version" | "ffmpeg-version" | "track-list"
-                                | "video-params" | "metadata" => {
-                                    mpv.observe_property::<&str>(property, 0).ok();
-                                }
-                                other => {
-                                    eprintln!("mpv-observe-prop: not implemented for `{}`", other);
-                                }
-                            };
+                for msg in rx.try_iter() {
+                    match serde_json::from_str::<InMsg>(msg.as_str()) {
+                        Ok(InMsg(
+                            InMsgFn::MpvObserveProp,
+                            InMsgArgs::ObProp(PropKey::Bool(prop)),
+                        )) => mpv.observe_property::<bool>(prop.to_string().as_str(), 0),
+                        Ok(InMsg(
+                            InMsgFn::MpvObserveProp,
+                            InMsgArgs::ObProp(PropKey::Int(prop)),
+                        )) => mpv.observe_property::<i64>(prop.to_string().as_str(), 0),
+                        Ok(InMsg(
+                            InMsgFn::MpvObserveProp,
+                            InMsgArgs::ObProp(PropKey::Fp(prop)),
+                        )) => mpv.observe_property::<f64>(prop.to_string().as_str(), 0),
+                        Ok(InMsg(
+                            InMsgFn::MpvObserveProp,
+                            InMsgArgs::ObProp(PropKey::Str(prop)),
+                        )) => mpv.observe_property::<&str>(prop.to_string().as_str(), 0),
+                        Ok(InMsg(
+                            InMsgFn::MpvSetProp,
+                            InMsgArgs::StProp(prop, PropVal::Bool(val)),
+                        )) => mpv.set_property(prop.to_string().as_str(), val),
+                        Ok(InMsg(
+                            InMsgFn::MpvSetProp,
+                            InMsgArgs::StProp(prop, PropVal::Num(val)),
+                        )) => mpv.set_property(prop.to_string().as_str(), val),
+                        Ok(InMsg(
+                            InMsgFn::MpvSetProp,
+                            InMsgArgs::StProp(prop, PropVal::Str(val)),
+                        )) => mpv.set_property(prop.to_string().as_str(), val.as_str()),
+                        Ok(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd))) => {
+                            let cmd: Vec<String> = cmd.into();
+                            mpv.command(&cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())
                         }
-                        "mpv-set-prop" => {
-                            match serde_json::from_value::<Vec<serde_json::Value>>(data.clone()) {
-                                Ok(prop_vector) if prop_vector.len() == 2 => {
-                                    let prop =
-                                        prop_vector[0].as_str().expect("Property is not a string");
-                                    let val = prop_vector[1].clone();
-                                    // If we change vo MPV panics
-                                    if prop != "vo" {
-                                        match val {
-                                            serde_json::Value::Bool(v) => {
-                                                mpv.set_property(prop, v).ok();
-                                            }
-                                            serde_json::Value::Number(v) => {
-                                                mpv.set_property(prop, v.as_f64().unwrap()).ok();
-                                            }
-                                            serde_json::Value::String(v) => {
-                                                mpv.set_property(prop, v.as_str()).ok();
-                                            }
-                                            val => eprintln!(
-                                                "mpv-set-prop unsupported value {:?} for: {}",
-                                                val, prop
-                                            ),
-                                        };
-                                    };
-                                }
-                                Ok(prop_vector) => {
-                                    eprintln!("mpv-set-prop not implemented for: {:?}", prop_vector)
-                                }
-                                Err(e) => {
-                                    eprintln!("mpv-set-prop Error: {:?} for data {}", e, data)
-                                }
-                            };
+                        _ => {
+                            eprintln!("MPV unsupported message {}", msg);
+                            Ok(())
                         }
-                        "mpv-command" => {
-                            match serde_json::from_value::<Vec<String>>(data.clone()) {
-                                Ok(data) if data.len() > 0 => {
-                                    let data: Vec<_> = data.iter().map(|s| s.as_str()).collect();
-                                    if data[0] != "run" {
-                                        mpv.command(&data).ok();
-                                    }
-                                }
-                                Ok(_) => {}
-                                Err(e) => {
-                                    eprintln!("mpv-command Error: {:?} for data {}", e, data)
-                                }
-                            }
-                        }
-                        _ => {}
-                    };
+                    }
+                    .ok();
                 } // incoming message drain loop
             } // main loop
-        });
-
+        }); // builder thread
         Ok(())
     }
 }
