@@ -85,6 +85,12 @@ impl PartialUi for WebView {
                     let webview = controller
                             .get_webview()
                             .expect("Cannot obtain webview from controller");
+                    let settings = webview.get_settings().unwrap();
+                    settings.put_is_status_bar_enabled(false).ok();
+                    settings.put_are_dev_tools_enabled(true).ok();
+                    settings.put_are_default_context_menus_enabled(false).ok();
+                    settings.put_is_zoom_control_enabled(false).ok();
+                    settings.put_is_built_in_error_page_enabled(false).ok();
                     if let Some(endpoint) = endpoint.get() {
                         if webview
                             .navigate(endpoint.as_str()).is_err() {
@@ -115,6 +121,7 @@ impl PartialUi for WebView {
                             }
                             Ok(())
                         }).ok();
+                        
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
                         controller_clone
                             .set(controller)
