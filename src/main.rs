@@ -41,11 +41,9 @@ fn main() {
 
     let opt = Opt::from_args();
 
-    let streaming_server: Option<StremioServer> = if opt.development {
-        None
-    } else {
-        Some(StremioServer::new())
-    };
+    if !opt.development {
+        StremioServer::new();
+    }
 
     let webui_url = if opt.development && opt.webui_url == WEB_ENDPOINT {
         "http://localhost:11470".to_string()
@@ -60,7 +58,4 @@ fn main() {
     })
     .expect("Failed to build UI");
     nwg::dispatch_thread_events();
-    if let Some(streaming_server) = streaming_server {
-        streaming_server.try_kill();
-    }
 }
