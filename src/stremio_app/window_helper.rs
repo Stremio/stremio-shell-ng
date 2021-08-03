@@ -1,5 +1,5 @@
 use std::{cmp, mem};
-use winapi::shared::windef::HWND__;
+use winapi::shared::windef::HWND;
 use winapi::um::winuser::{
     GetForegroundWindow, GetSystemMetrics, GetWindowLongA, GetWindowRect, IsIconic, IsZoomed,
     SetWindowLongA, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST,
@@ -27,7 +27,7 @@ pub struct WindowStyle {
 }
 
 impl WindowStyle {
-    pub fn get_window_state(self, hwnd: *mut HWND__) -> u32 {
+    pub fn get_window_state(self, hwnd: HWND) -> u32 {
         let mut state: WindowState = WindowState::empty();
         if 0 != unsafe { IsIconic(hwnd) } {
             state |= WindowState::MINIMIZED;
@@ -43,7 +43,7 @@ impl WindowStyle {
         }
         state.bits() as u32
     }
-    pub fn show_window_at(&self, hwnd: *mut HWND__, pos: *mut HWND__) {
+    pub fn show_window_at(&self, hwnd: HWND, pos: HWND) {
         unsafe {
             SetWindowPos(
                 hwnd,
@@ -56,7 +56,7 @@ impl WindowStyle {
             );
         }
     }
-    pub fn center_window(&mut self, hwnd: *mut HWND__, min_width: i32, min_height: i32) {
+    pub fn center_window(&mut self, hwnd: HWND, min_width: i32, min_height: i32) {
         let monitor_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
         let monitor_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         let small_side = cmp::min(monitor_w, monitor_h) * 70 / 100;
@@ -67,7 +67,7 @@ impl WindowStyle {
         self.pos = ((monitor_w - self.size.0) / 2, (monitor_h - self.size.1) / 2);
         self.show_window_at(hwnd, HWND_NOTOPMOST);
     }
-    pub fn toggle_full_screen(&mut self, hwnd: *mut HWND__) {
+    pub fn toggle_full_screen(&mut self, hwnd: HWND) {
         if self.full_screen {
             let topmost = if self.ex_style as u32 & WS_EX_TOPMOST == WS_EX_TOPMOST {
                 HWND_TOPMOST
@@ -115,7 +115,7 @@ impl WindowStyle {
             self.full_screen = true;
         }
     }
-    pub fn toggle_topmost(&mut self, hwnd: *mut HWND__) {
+    pub fn toggle_topmost(&mut self, hwnd: HWND) {
         let topmost = if unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST
             == WS_EX_TOPMOST
         {

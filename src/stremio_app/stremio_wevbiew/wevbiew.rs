@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use urlencoding::decode;
 use webview2::Controller;
-use winapi::shared::windef::HWND__;
+use winapi::shared::windef::HWND;
 use winapi::um::winuser::*;
 
 #[derive(Default)]
@@ -28,7 +28,7 @@ pub struct WebView {
 impl WebView {
     fn resize_to_window_bounds_and_show(
         controller: Option<&Controller>,
-        hwnd: Option<*mut HWND__>,
+        hwnd: Option<HWND>,
     ) {
         if let (Some(controller), Some(hwnd)) = (controller, hwnd) {
             unsafe {
@@ -56,14 +56,13 @@ impl PartialUi for WebView {
 
         let parent = parent.expect("No parent window").into();
 
-        let hwnd = parent.hwnd().expect("Cannot obtain window handle") as i64;
+        let hwnd = parent.hwnd().expect("Cannot obtain window handle");
         nwg::Notice::builder()
             .parent(parent)
             .build(&mut data.notice)
             .ok();
         let controller_clone = data.controller.clone();
         let endpoint = data.endpoint.clone();
-        let hwnd = hwnd as *mut HWND__;
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments("--disable-gpu --autoplay-policy=no-user-gesture-required")
             .build(move |env| {
