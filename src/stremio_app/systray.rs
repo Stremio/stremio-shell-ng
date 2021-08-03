@@ -12,11 +12,11 @@ pub struct SystemTray {
     pub tray: nwg::TrayNotification,
     #[nwg_control(popup: true)]
     pub tray_menu: nwg::Menu,
-    #[nwg_control(parent: tray_menu, text: "&Show Window")]
+    #[nwg_control(parent: tray_menu, text: "&Show window")]
     pub tray_show_hide: nwg::MenuItem,
-    #[nwg_control(parent: tray_menu, text: "Always on &Top")]
+    #[nwg_control(parent: tray_menu, text: "Always on &top")]
     pub tray_topmost: nwg::MenuItem,
-    #[nwg_control(parent: tray_menu, text: "E&xit")]
+    #[nwg_control(parent: tray_menu, text: "&Quit")]
     pub tray_exit: nwg::MenuItem,
 }
 
