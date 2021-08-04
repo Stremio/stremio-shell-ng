@@ -13,7 +13,7 @@ use std::thread;
 use urlencoding::decode;
 use webview2::Controller;
 use winapi::shared::windef::HWND;
-use winapi::um::winuser::*;
+use winapi::um::winuser::{GetClientRect, WM_SETFOCUS};
 
 #[derive(Default)]
 pub struct WebView {
@@ -26,10 +26,7 @@ pub struct WebView {
 }
 
 impl WebView {
-    fn resize_to_window_bounds_and_show(
-        controller: Option<&Controller>,
-        hwnd: Option<HWND>,
-    ) {
+    fn resize_to_window_bounds_and_show(controller: Option<&Controller>, hwnd: Option<HWND>) {
         if let (Some(controller), Some(hwnd)) = (controller, hwnd) {
             unsafe {
                 let mut rect = mem::zeroed();
@@ -120,7 +117,7 @@ impl PartialUi for WebView {
                             }
                             Ok(())
                         }).ok();
-                        
+
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
                         controller_clone
                             .set(controller)
@@ -146,6 +143,21 @@ impl PartialUi for WebView {
             }
         }));
 
+        // handler ids equal or smaller than 0xFFFF are reserved by NWG
+        let handler_id = 0x10000;
+        let controller_clone = data.controller.clone();
+        nwg::bind_raw_event_handler(&parent, handler_id, move |_hwnd, msg, _w, _l| {
+            if msg == WM_SETFOCUS {
+                controller_clone.get().and_then(|controller| {
+                    controller
+                        .move_focus(webview2::MoveFocusReason::Programmatic)
+                        .ok()
+                });
+            }
+            None
+        })
+        .ok();
+
         Ok(())
     }
     fn process_event<'a>(
@@ -156,16 +168,6 @@ impl PartialUi for WebView {
     ) {
         use nwg::Event as E;
         match evt {
-            // FIXME: Hack to focus the webview when pressing alt-tab.
-            // This doesn't work if you click the window's title with
-            // the mouse. A better solution is needed
-            E::OnKeyPress | E::OnKeyRelease => {
-                if let Some(controller) = self.controller.get() {
-                    controller
-                        .move_focus(webview2::MoveFocusReason::Programmatic)
-                        .ok();
-                }
-            }
             E::OnPaint => {
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }
