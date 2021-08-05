@@ -1,9 +1,7 @@
 use core::convert::TryFrom;
-use heck::KebabCase;
+use parse_display::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::str::FromStr;
-use strum_macros::EnumString;
 
 // Responses
 const JSON_RESPONSES: [&str; 3] = ["track-list", "video-params", "metadata"];
@@ -105,40 +103,34 @@ have any arguments. For example this are the commands we support:
 */
 macro_rules! stringable {
     ($t:ident) => {
-        impl fmt::Display for $t {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                write!(f, "{}", format!("{:?}", self).to_kebab_case())
-            }
-        }
         impl From<$t> for String {
             fn from(s: $t) -> Self {
                 s.to_string()
             }
         }
         impl TryFrom<String> for $t {
-            type Error = strum::ParseError;
+            type Error = parse_display::ParseError;
             fn try_from(s: String) -> Result<Self, Self::Error> {
-                Self::from_str(s.as_str())
+                s.parse()
             }
         }
     };
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 pub enum InMsgFn {
     MpvSetProp,
     MpvCommand,
     MpvObserveProp,
 }
 stringable!(InMsgFn);
-
 // Bool
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 pub enum BoolProp {
     Pause,
     PausedForCache,
@@ -147,9 +139,9 @@ pub enum BoolProp {
 }
 stringable!(BoolProp);
 // Int
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 pub enum IntProp {
     Aid,
     Vid,
@@ -157,9 +149,9 @@ pub enum IntProp {
 }
 stringable!(IntProp);
 // Fp
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 pub enum FpProp {
     TimePos,
     Volume,
@@ -171,9 +163,9 @@ pub enum FpProp {
 }
 stringable!(FpProp);
 // Str
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 pub enum StrProp {
     FfmpegVersion,
     Hwdec,
@@ -221,9 +213,9 @@ pub enum PropVal {
     Num(f64),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, EnumString, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(try_from = "String", into = "String")]
-#[strum(serialize_all = "kebab-case")]
+#[display(style = "kebab-case")]
 #[serde(untagged)]
 pub enum MpvCmd {
     Loadfile,
