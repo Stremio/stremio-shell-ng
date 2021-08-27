@@ -1,4 +1,5 @@
 use core::convert::TryFrom;
+use libmpv::events::PropertyData;
 use parse_display::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -12,26 +13,27 @@ pub struct PlayerProprChange {
     data: serde_json::Value,
 }
 impl PlayerProprChange {
-    fn value_from_format(data: mpv::Format, as_json: bool) -> serde_json::Value {
+    fn value_from_format(data: PropertyData, as_json: bool) -> serde_json::Value {
         match data {
-            mpv::Format::Flag(d) => serde_json::Value::Bool(d),
-            mpv::Format::Int(d) => serde_json::Value::Number(
+            PropertyData::Flag(d) => serde_json::Value::Bool(d),
+            PropertyData::Int64(d) => serde_json::Value::Number(
                 serde_json::Number::from_f64(d as f64).expect("MPV returned invalid number"),
             ),
-            mpv::Format::Double(d) => serde_json::Value::Number(
+            PropertyData::Double(d) => serde_json::Value::Number(
                 serde_json::Number::from_f64(d).expect("MPV returned invalid number"),
             ),
-            mpv::Format::OsdStr(s) => serde_json::Value::String(s.to_string()),
-            mpv::Format::Str(s) => {
+            PropertyData::OsdStr(s) => serde_json::Value::String(s.to_string()),
+            PropertyData::Str(s) => {
                 if as_json {
                     serde_json::from_str(s).expect("MPV returned invalid JSON data")
                 } else {
                     serde_json::Value::String(s.to_string())
                 }
             }
+            _ => serde_json::Value::Null,
         }
     }
-    pub fn from_name_value(name: String, value: mpv::Format) -> Self {
+    pub fn from_name_value(name: String, value: PropertyData) -> Self {
         let is_json = JSON_RESPONSES.contains(&name.as_str());
         Self {
             name,
@@ -44,14 +46,15 @@ pub struct PlayerEnded {
     reason: String,
 }
 impl PlayerEnded {
-    fn string_from_end_reason(data: mpv::EndFileReason) -> String {
+    fn string_from_end_reason(data: u32) -> String {
+        // defined here https://github.com/mpv-player/mpv/blob/master/libmpv/client.h#L1585
         match data {
-            mpv::EndFileReason::MPV_END_FILE_REASON_ERROR => "error".to_string(),
-            mpv::EndFileReason::MPV_END_FILE_REASON_QUIT => "quit".to_string(),
+            4 => "error".to_string(),
+            3 => "quit".to_string(),
             _ => "other".to_string(),
         }
     }
-    pub fn from_end_reason(data: mpv::EndFileReason) -> Self {
+    pub fn from_end_reason(data: u32) -> Self {
         Self {
             reason: Self::string_from_end_reason(data),
         }
