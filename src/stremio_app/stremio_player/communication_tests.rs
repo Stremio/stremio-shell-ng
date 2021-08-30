@@ -4,7 +4,6 @@ use crate::stremio_app::stremio_player::communication::{
 };
 
 use serde_test::{assert_tokens, Token};
-use libmpv::events::PropertyData;
 
 #[test]
 fn propr_change_tokens() {
@@ -21,7 +20,7 @@ fn propr_change_tokens() {
         Token::StructEnd,
     ];
 
-    fn tokens_by_type(tokens: &[Token; 6], name: &'static str, val: PropertyData, token: Token) {
+    fn tokens_by_type(tokens: &[Token; 6], name: &'static str, val: mpv::Format, token: Token) {
         let mut typed_tokens = tokens.clone();
         typed_tokens[2] = Token::Str(name);
         typed_tokens[4] = token;
@@ -30,29 +29,29 @@ fn propr_change_tokens() {
             &typed_tokens,
         );
     }
-    tokens_by_type(&tokens, prop, PropertyData::Flag(true), Token::Bool(true));
-    tokens_by_type(&tokens, prop, PropertyData::Int64(1), Token::F64(1.0));
-    tokens_by_type(&tokens, prop, PropertyData::Double(1.0), Token::F64(1.0));
-    tokens_by_type(&tokens, prop, PropertyData::OsdStr("ok"), Token::Str("ok"));
-    tokens_by_type(&tokens, prop, PropertyData::Str("ok"), Token::Str("ok"));
+    tokens_by_type(&tokens, prop, mpv::Format::Flag(true), Token::Bool(true));
+    tokens_by_type(&tokens, prop, mpv::Format::Int(1), Token::F64(1.0));
+    tokens_by_type(&tokens, prop, mpv::Format::Double(1.0), Token::F64(1.0));
+    tokens_by_type(&tokens, prop, mpv::Format::OsdStr("ok"), Token::Str("ok"));
+    tokens_by_type(&tokens, prop, mpv::Format::Str("ok"), Token::Str("ok"));
 
     // JSON response
     tokens_by_type(
         &tokens,
         "track-list",
-        PropertyData::Str(r#""ok""#),
+        mpv::Format::Str(r#""ok""#),
         Token::Str("ok"),
     );
     tokens_by_type(
         &tokens,
         "video-params",
-        PropertyData::Str(r#""ok""#),
+        mpv::Format::Str(r#""ok""#),
         Token::Str("ok"),
     );
     tokens_by_type(
         &tokens,
         "metadata",
-        PropertyData::Str(r#""ok""#),
+        mpv::Format::Str(r#""ok""#),
         Token::Str("ok"),
     );
 }
@@ -71,13 +70,13 @@ fn ended_tokens() {
     let mut typed_tokens = tokens.clone();
     typed_tokens[2] = Token::Str("error");
     assert_tokens(
-        &PlayerEnded::from_end_reason(4),
+        &PlayerEnded::from_end_reason(mpv::EndFileReason::MPV_END_FILE_REASON_ERROR),
         &typed_tokens,
     );
     let mut typed_tokens = tokens.clone();
     typed_tokens[2] = Token::Str("quit");
     assert_tokens(
-        &PlayerEnded::from_end_reason(3),
+        &PlayerEnded::from_end_reason(mpv::EndFileReason::MPV_END_FILE_REASON_QUIT),
         &typed_tokens,
     );
 }
