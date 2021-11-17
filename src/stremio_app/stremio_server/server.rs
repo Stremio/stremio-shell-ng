@@ -2,6 +2,9 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use win32job::Job;
+use std::os::windows::process::CommandExt;
+
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct StremioServer {}
 
@@ -16,6 +19,7 @@ impl StremioServer {
             loop {
                 let mut child = Command::new("node")
                     .arg("server.js")
+                    .creation_flags(CREATE_NO_WINDOW)
                     .spawn()
                     .expect("Cannot run the server");
                 child.wait().expect("Cannot wait for the server");
