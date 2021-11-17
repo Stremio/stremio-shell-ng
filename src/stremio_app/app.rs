@@ -16,6 +16,7 @@ use crate::stremio_app::window_helper::WindowStyle;
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub webui_url: String,
+    pub dev_tools: bool,
     pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
@@ -76,6 +77,7 @@ impl MainWindow {
     }
     fn on_init(&self) {
         self.webview.endpoint.set(self.webui_url.clone()).ok();
+        self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             let mut saved_style = self.saved_window_style.borrow_mut();
             saved_style.center_window(hwnd, Self::MIN_WIDTH, Self::MIN_HEIGHT);

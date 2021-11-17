@@ -15,6 +15,8 @@ const STA_ENDPOINT: &str = "https://staging.strem.io/";
 #[structopt(name = "basic")]
 struct Opt {
     #[structopt(long)]
+    dev_tools: bool,
+    #[structopt(long)]
     development: bool,
     #[structopt(long)]
     staging: bool,
@@ -51,6 +53,7 @@ fn main() {
     nwg::init().expect("Failed to init Native Windows GUI");
     let _app = MainWindow::build_ui(MainWindow {
         webui_url,
+        dev_tools: opt.development || opt.dev_tools,
         ..Default::default()
     })
     .expect("Failed to build UI");
