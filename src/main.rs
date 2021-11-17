@@ -8,13 +8,17 @@ use winapi::um::winuser::{ShowWindow, SW_HIDE};
 mod stremio_app;
 use crate::stremio_app::{stremio_server::StremioServer, MainWindow};
 
-const WEB_ENDPOINT: &str = "http://app.strem.io/shell-v4.4/";
+const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
+const WEB_ENDPOINT: &str = "https://app.strem.io/shell-v4.4/";
+const STA_ENDPOINT: &str = "https://staging.strem.io/";
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "basic")]
 struct Opt {
     #[structopt(long)]
     development: bool,
+    #[structopt(long)]
+    staging: bool,
     #[structopt(long, default_value = WEB_ENDPOINT)]
     webui_url: String,
 }
@@ -46,7 +50,9 @@ fn main() {
     }
 
     let webui_url = if opt.development && opt.webui_url == WEB_ENDPOINT {
-        "http://localhost:11470".to_string()
+        DEV_ENDPOINT.to_string()
+    } else if opt.staging && opt.webui_url == WEB_ENDPOINT {
+        STA_ENDPOINT.to_string()
     } else {
         opt.webui_url
     };
