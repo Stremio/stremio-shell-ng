@@ -108,16 +108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-utils"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d82cfc11ce7f2c3faef78d8a684447b40d503d9681acebed6cb728d45940c4db"
-dependencies = [
- "cfg-if",
- "lazy_static",
-]
-
-[[package]]
 name = "embed-resource"
 version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -268,8 +258,7 @@ checksum = "b16bd47d9e329435e309c58469fe0791c2d0d1ba96ec0954152a5ae2b04387dc"
 [[package]]
 name = "mpv"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e57fd944655bbef6aaab8a154b0f78ed55aaaaf211edf956330c56309236f82"
+source = "git+https://github.com/Stremio/mpv-rs.git#3ef09f637803711f474edfe2c73a9f7dd35067e2"
 dependencies = [
  "enum_primitive",
  "log 0.3.9",
@@ -669,7 +658,6 @@ name = "stremio-shell-ng"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "crossbeam-utils",
  "embed-resource",
  "flume",
  "mpv",
