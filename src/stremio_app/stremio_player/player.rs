@@ -27,6 +27,7 @@ impl PartialUi for Player {
             .into()
             .hwnd()
             .expect("Cannot obtain window handle") as i64;
+
         thread::spawn(move || {
             let mut mpv_builder =
                 mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
@@ -58,14 +59,21 @@ impl PartialUi for Player {
             mpv_builder
                 .set_option("quiet", "yes")
                 .expect("failed setting msg-level");
-            let mut mpv = mpv_builder.build().expect("Cannot build MPV");
+            let mut mpv_built = mpv_builder.build().expect("Cannot build MPV");
 
-            'main: loop {
-                // wait up to X seconds for an event.
-                while let Some(event) = mpv.wait_event(0.0) {
+            // FIXME: very often the audio track isn't selected when using "aid" = "auto"
+            mpv_built.set_property("aid", 1).ok();
+
+            let mut mpv = mpv_built.clone();
+            let event_thread = thread::spawn(move || {
+                // -1.0 means to block and wait for an event.
+                while let Some(event) = mpv.wait_event(-1.0) {
+                    if mpv.raw().is_null() {
+                        return;
+                    }
+
                     // even if you don't do anything with the events, it is still necessary to empty
                     // the event loop
-
                     let resp_event = match event {
                         mpv::Event::PropertyChange {
                             name,
@@ -85,17 +93,22 @@ impl PartialUi for Player {
                         )
                         .to_value(),
                         mpv::Event::Shutdown => {
-                            break 'main;
+                            break;
                         }
                         _ => None,
                     };
                     if resp_event.is_some() {
                         tx1.send(RPCResponse::response_message(resp_event)).ok();
                     }
-                } // event processing
+                } // event drain loop
+            }); // event thread
 
-                thread::sleep(std::time::Duration::from_millis(30));
-                for msg in rx.try_iter() {
+            let mut mpv = mpv_built.clone();
+            let message_thread = thread::spawn(move || {
+                for msg in rx.iter() {
+                    if mpv.raw().is_null() {
+                        return;
+                    }
                     match serde_json::from_str::<InMsg>(msg.as_str()) {
                         Ok(InMsg(
                             InMsgFn::MpvObserveProp,
@@ -136,7 +149,13 @@ impl PartialUi for Player {
                     }
                     .ok();
                 } // incoming message drain loop
-            } // main loop
+            }); // message thread
+
+            // If we don't join our communication threads
+            // the `mpv_built` gets dropped and we have
+            // "use after free" errors which is very bad
+            event_thread.join().ok();
+            message_thread.join().ok();
         }); // builder thread
         Ok(())
     }
