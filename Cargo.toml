@@ -21,6 +21,8 @@ urlencoding = "2.1.0"
 bitflags = "1.2.1"
 win32job = "1"
 parse-display = "0.5.1"
+crossbeam-utils = "0.8.5"
+flume = "0.10.9"
 
 [build-dependencies]
 embed-resource = "1.3"

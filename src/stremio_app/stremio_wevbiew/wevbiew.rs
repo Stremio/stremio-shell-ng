@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::mem;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use urlencoding::decode;
@@ -47,10 +46,10 @@ impl PartialUi for WebView {
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = flume::unbounded();
         let tx_drag_drop = tx.clone();
-        let (tx_web, rx_web) = mpsc::channel::<String>();
-        data.channel = RefCell::new(Some((tx, Arc::new(Mutex::new(rx_web)))));
+        let (tx_web, rx_web) = flume::unbounded();
+        data.channel = RefCell::new(Some((tx, rx_web)));
 
         let parent = parent.expect("No parent window").into();
 

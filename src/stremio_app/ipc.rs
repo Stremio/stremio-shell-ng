@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::cell::RefCell;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 
-pub type Channel = RefCell<Option<(mpsc::Sender<String>, Arc<Mutex<mpsc::Receiver<String>>>)>>;
+pub type Channel = RefCell<Option<(flume::Sender<String>, flume::Receiver<String>)>>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RPCRequest {

@@ -2,7 +2,6 @@ use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use serde_json;
 use std::cell::RefCell;
-use std::sync::Arc;
 use std::thread;
 use winapi::um::winuser::WS_EX_TOPMOST;
 
@@ -90,7 +89,7 @@ impl MainWindow {
             .as_ref()
             .expect("Cannont obtain communication channel for the Player");
         let player_tx = player_tx.clone();
-        let player_rx = Arc::clone(player_rx);
+        let player_rx = player_rx.clone();
 
         let web_channel = self.webview.channel.borrow();
         let (web_tx, web_rx) = web_channel
@@ -98,19 +97,17 @@ impl MainWindow {
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
-        let web_rx = Arc::clone(web_rx);
+        let web_rx = web_rx.clone();
         // Read message from player
         thread::spawn(move || loop {
-            let rx = player_rx.lock().unwrap();
-            rx.iter().map(|msg| web_tx_player.send(msg)).for_each(drop);
+            player_rx.iter().map(|msg| web_tx_player.send(msg)).for_each(drop);
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
         thread::spawn(move || loop {
-            let rx = web_rx.lock().unwrap();
-            if let Some(msg) = rx
+            if let Some(msg) = web_rx
                 .recv()
                 .ok()
                 .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())

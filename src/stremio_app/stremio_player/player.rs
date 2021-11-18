@@ -2,8 +2,6 @@ use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
 use native_windows_gui::{self as nwg, PartialUi};
 use std::cell::RefCell;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::stremio_app::stremio_player::{
@@ -21,9 +19,9 @@ impl PartialUi for Player {
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
-        let (tx, rx) = mpsc::channel::<String>();
-        let (tx1, rx1) = mpsc::channel::<String>();
-        data.channel = RefCell::new(Some((tx, Arc::new(Mutex::new(rx1)))));
+        let (tx, rx) = flume::unbounded();
+        let (tx1, rx1) = flume::unbounded();
+        data.channel = RefCell::new(Some((tx, rx1)));
         let hwnd = parent
             .expect("No parent window")
             .into()
