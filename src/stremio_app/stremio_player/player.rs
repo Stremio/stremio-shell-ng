@@ -59,45 +59,32 @@ impl PartialUi for Player {
 
 fn create_shareable_mpv(window_handle: HWND) -> Arc<Mpv> {
     let mpv = Mpv::with_initializer(|initializer| {
-        initializer
-            .set_property("wid", window_handle as i64)
-            .expect("failed setting wid");
+        macro_rules! set_property {
+            ($name:literal, $value:expr) => {
+                initializer
+                    .set_property($name, $value)
+                    .expect(concat!("failed to set ", $name));
+            };
+        }
+        set_property!("wid", window_handle as i64);
         // initializer.set_property("vo", "gpu").expect("unable to set vo");
         // win, opengl: works but least performancy, 10-15% CPU
         // winvk, vulkan: works as good as d3d11
         // d3d11, d1d11: works great
         // dxinterop, auto: works, slightly more cpu use than d3d11
         // default (auto) seems to be d3d11 (vo/gpu/d3d11)
-        initializer
-            .set_property("gpu-context", "angle")
-            .expect("failed setting gpu-contex");
-        initializer
-            .set_property("gpu-api", "auto")
-            .expect("failed setting gpu-api");
-        initializer
-            .set_property("title", "Stremio")
-            .expect("failed setting title");
-        initializer
-            .set_property("terminal", "yes")
-            .expect("failed setting terminal");
-        initializer
-            .set_property("msg-level", "all=no,cplayer=debug")
-            .expect("failed setting msg-level");
-        initializer
-            .set_property("quiet", "yes")
-            .expect("failed setting quiet");
-        initializer
-            .set_property("hwdec", "auto")
-            .expect("failed setting hwdec");
+        set_property!("gpu-context", "angle");
+        set_property!("gpu-api", "auto");
+        set_property!("title", "Stremio");
+        set_property!("terminal", "yes");
+        set_property!("msg-level", "all=no,cplayer=debug");
+        set_property!("quiet", "yes");
+        set_property!("hwdec", "auto");
         // FIXME: very often the audio track isn't selected when using "aid" = "auto"
-        initializer
-            .set_property("aid", 1)
-            .expect("failed setting aid");
+        set_property!("aid", "1");
         Ok(())
-    })
-    .expect("cannot build MPV");
-
-    Arc::new(mpv)
+    });
+    Arc::new(mpv.expect("cannot build MPV"))
 }
 
 fn create_event_thread(
@@ -110,6 +97,8 @@ fn create_event_thread(
         event_context
             .disable_deprecated_events()
             .expect("failed to disable deprecated MPV events");
+
+        // -- Event handler loop --
 
         loop {
             for ObserveProperty { name, format } in observe_property_receiver.drain() {
@@ -131,21 +120,17 @@ fn create_event_thread(
 
             // even if you don't do anything with the events, it is still necessary to empty the event loop
             let player_response = match event {
-                Event::PropertyChange { name, change, .. } => {
-                    PlayerResponse(
-                        "mpv-prop-change",
-                        PlayerEvent::PropChange(PlayerProprChange::from_name_value(
-                            name.to_string(),
-                            change,
-                        )),
-                    )
-                }
-                Event::EndFile(reason) => {
-                    PlayerResponse(
-                        "mpv-event-ended",
-                        PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
-                    )
-                }
+                Event::PropertyChange { name, change, .. } => PlayerResponse(
+                    "mpv-prop-change",
+                    PlayerEvent::PropChange(PlayerProprChange::from_name_value(
+                        name.to_string(),
+                        change,
+                    )),
+                ),
+                Event::EndFile(reason) => PlayerResponse(
+                    "mpv-event-ended",
+                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
+                ),
                 Event::Shutdown => {
                     break;
                 }
