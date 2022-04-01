@@ -132,7 +132,7 @@ impl MainWindow {
                         hide_splash_sender.notice();
                         if let Some(arg) = msg.get_params() {
                             // TODO: Make this modal dialog
-                            eprintln!("Web App Error: {}", arg.to_string());
+                            eprintln!("Web App Error: {}", arg);
                         }
                     }
                     Some("open-external") => {
