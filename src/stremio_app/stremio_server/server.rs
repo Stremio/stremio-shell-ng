@@ -1,8 +1,8 @@
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use win32job::Job;
-use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 

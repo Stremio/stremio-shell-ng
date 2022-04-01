@@ -100,7 +100,10 @@ impl MainWindow {
         let web_rx = web_rx.clone();
         // Read message from player
         thread::spawn(move || loop {
-            player_rx.iter().map(|msg| web_tx_player.send(msg)).for_each(drop);
+            player_rx
+                .iter()
+                .map(|msg| web_tx_player.send(msg))
+                .for_each(drop);
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();

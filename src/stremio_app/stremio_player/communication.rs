@@ -1,8 +1,8 @@
 use core::convert::TryFrom;
+use libmpv::{events::PropertyData, mpv_end_file_reason, EndFileReason};
 use parse_display::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use libmpv::{events::PropertyData, EndFileReason, mpv_end_file_reason};
 
 // Responses
 const JSON_RESPONSES: [&str; 3] = ["track-list", "video-params", "metadata"];
