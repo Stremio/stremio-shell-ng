@@ -210,5 +210,6 @@ impl MainWindow {
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_full_screen_change(false);
+        nwg::stop_thread_dispatch();
     }
 }
