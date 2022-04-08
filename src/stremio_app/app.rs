@@ -100,7 +100,10 @@ impl MainWindow {
         let web_rx = web_rx.clone();
         // Read message from player
         thread::spawn(move || loop {
-            player_rx.iter().map(|msg| web_tx_player.send(msg)).for_each(drop);
+            player_rx
+                .iter()
+                .map(|msg| web_tx_player.send(msg))
+                .for_each(drop);
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
@@ -129,7 +132,7 @@ impl MainWindow {
                         hide_splash_sender.notice();
                         if let Some(arg) = msg.get_params() {
                             // TODO: Make this modal dialog
-                            eprintln!("Web App Error: {}", arg.to_string());
+                            eprintln!("Web App Error: {}", arg);
                         }
                     }
                     Some("open-external") => {
@@ -210,5 +213,6 @@ impl MainWindow {
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_full_screen_change(false);
+        nwg::stop_thread_dispatch();
     }
 }

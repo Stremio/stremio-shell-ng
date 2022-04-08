@@ -21,13 +21,9 @@ impl RPCRequest {
             .and_then(|arg| arg.as_str())
     }
     pub fn get_params(&self) -> Option<&serde_json::Value> {
-        self.args.as_ref().and_then(|args| {
-            if args.len() > 1 {
-                Some(&args[1])
-            } else {
-                None
-            }
-        })
+        self.args
+            .as_ref()
+            .and_then(|args| if args.len() > 1 { Some(&args[1]) } else { None })
     }
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]

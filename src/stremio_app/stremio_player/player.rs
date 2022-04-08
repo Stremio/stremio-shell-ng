@@ -1,13 +1,23 @@
 use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
+use flume::{Receiver, Sender};
+use libmpv::{events::Event, Format, Mpv, SetData};
 use native_windows_gui::{self as nwg, PartialUi};
-use std::cell::RefCell;
-use std::thread;
+use std::{
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
+use winapi::shared::windef::HWND;
 
 use crate::stremio_app::stremio_player::{
-    InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
+    CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
     PropKey, PropVal,
 };
+
+struct ObserveProperty {
+    name: String,
+    format: Format,
+}
 
 #[derive(Default)]
 pub struct Player {
@@ -16,147 +26,206 @@ pub struct Player {
 
 impl PartialUi for Player {
     fn build_partial<W: Into<nwg::ControlHandle>>(
+        // @TODO replace with `&mut self`?
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
-        let (tx, rx) = flume::unbounded();
-        let (tx1, rx1) = flume::unbounded();
-        data.channel = RefCell::new(Some((tx, rx1)));
-        let hwnd = parent
-            .expect("No parent window")
+        // @TODO replace all `expect`s with proper error handling?
+
+        let window_handle = parent
+            .expect("no parent window")
             .into()
             .hwnd()
-            .expect("Cannot obtain window handle") as i64;
+            .expect("cannot obtain window handle");
 
-        thread::spawn(move || {
-            let mut mpv_builder =
-                mpv::MpvHandlerBuilder::new().expect("Error while creating MPV builder");
-            mpv_builder
-                .set_option("wid", hwnd)
-                .expect("failed setting wid");
-            // mpv_builder.set_option("vo", "gpu").expect("unable to set vo");
-            // win, opengl: works but least performancy, 10-15% CPU
-            // winvk, vulkan: works as good as d3d11
-            // d3d11, d1d11: works great
-            // dxinterop, auto: works, slightly more cpu use than d3d11
-            // default (auto) seems to be d3d11 (vo/gpu/d3d11)
-            mpv_builder
-                .set_option("gpu-context", "angle")
-                .and_then(|_| mpv_builder.set_option("gpu-api", "auto"))
-                .expect("setting gpu options failed");
-            mpv_builder
-                .try_hardware_decoding()
-                .expect("failed setting hwdec");
-            mpv_builder
-                .set_option("title", "Stremio")
-                .expect("failed setting title");
-            mpv_builder
-                .set_option("terminal", "yes")
-                .expect("failed setting terminal");
-            mpv_builder
-                .set_option("msg-level", "all=no,cplayer=debug")
-                .expect("failed setting msg-level");
-            mpv_builder
-                .set_option("quiet", "yes")
-                .expect("failed setting msg-level");
-            let mut mpv_built = mpv_builder.build().expect("Cannot build MPV");
+        let (in_msg_sender, in_msg_receiver) = flume::unbounded();
+        let (rpc_response_sender, rpc_response_receiver) = flume::unbounded();
+        let (observe_property_sender, observe_property_receiver) = flume::unbounded();
+        data.channel = ipc::Channel::new(Some((in_msg_sender, rpc_response_receiver)));
 
-            // FIXME: very often the audio track isn't selected when using "aid" = "auto"
-            mpv_built.set_property("aid", 1).ok();
+        let mpv = create_shareable_mpv(window_handle);
 
-            let mut mpv = mpv_built.clone();
-            let event_thread = thread::spawn(move || {
-                // -1.0 means to block and wait for an event.
-                while let Some(event) = mpv.wait_event(-1.0) {
-                    if mpv.raw().is_null() {
-                        return;
-                    }
+        let _event_thread = create_event_thread(
+            Arc::clone(&mpv),
+            observe_property_receiver,
+            rpc_response_sender,
+        );
+        let _message_thread = create_message_thread(mpv, observe_property_sender, in_msg_receiver);
+        // @TODO implement a mechanism to stop threads on `Player` drop if needed
 
-                    // even if you don't do anything with the events, it is still necessary to empty
-                    // the event loop
-                    let resp_event = match event {
-                        mpv::Event::PropertyChange {
-                            name,
-                            change,
-                            reply_userdata: _,
-                        } => PlayerResponse(
-                            "mpv-prop-change",
-                            PlayerEvent::PropChange(PlayerProprChange::from_name_value(
-                                name.to_string(),
-                                change,
-                            )),
-                        )
-                        .to_value(),
-                        mpv::Event::EndFile(Ok(reason)) => PlayerResponse(
-                            "mpv-event-ended",
-                            PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
-                        )
-                        .to_value(),
-                        mpv::Event::Shutdown => {
-                            break;
-                        }
-                        _ => None,
-                    };
-                    if resp_event.is_some() {
-                        tx1.send(RPCResponse::response_message(resp_event)).ok();
-                    }
-                } // event drain loop
-            }); // event thread
-
-            let mut mpv = mpv_built.clone();
-            let message_thread = thread::spawn(move || {
-                for msg in rx.iter() {
-                    if mpv.raw().is_null() {
-                        return;
-                    }
-                    match serde_json::from_str::<InMsg>(msg.as_str()) {
-                        Ok(InMsg(
-                            InMsgFn::MpvObserveProp,
-                            InMsgArgs::ObProp(PropKey::Bool(prop)),
-                        )) => mpv.observe_property::<bool>(prop.to_string().as_str(), 0),
-                        Ok(InMsg(
-                            InMsgFn::MpvObserveProp,
-                            InMsgArgs::ObProp(PropKey::Int(prop)),
-                        )) => mpv.observe_property::<i64>(prop.to_string().as_str(), 0),
-                        Ok(InMsg(
-                            InMsgFn::MpvObserveProp,
-                            InMsgArgs::ObProp(PropKey::Fp(prop)),
-                        )) => mpv.observe_property::<f64>(prop.to_string().as_str(), 0),
-                        Ok(InMsg(
-                            InMsgFn::MpvObserveProp,
-                            InMsgArgs::ObProp(PropKey::Str(prop)),
-                        )) => mpv.observe_property::<&str>(prop.to_string().as_str(), 0),
-                        Ok(InMsg(
-                            InMsgFn::MpvSetProp,
-                            InMsgArgs::StProp(prop, PropVal::Bool(val)),
-                        )) => mpv.set_property(prop.to_string().as_str(), val),
-                        Ok(InMsg(
-                            InMsgFn::MpvSetProp,
-                            InMsgArgs::StProp(prop, PropVal::Num(val)),
-                        )) => mpv.set_property(prop.to_string().as_str(), val),
-                        Ok(InMsg(
-                            InMsgFn::MpvSetProp,
-                            InMsgArgs::StProp(prop, PropVal::Str(val)),
-                        )) => mpv.set_property(prop.to_string().as_str(), val.as_str()),
-                        Ok(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd))) => {
-                            let cmd: Vec<String> = cmd.into();
-                            mpv.command(&cmd.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                        }
-                        _ => {
-                            eprintln!("MPV unsupported message {}", msg);
-                            Ok(())
-                        }
-                    }
-                    .ok();
-                } // incoming message drain loop
-            }); // message thread
-
-            // If we don't join our communication threads
-            // the `mpv_built` gets dropped and we have
-            // "use after free" errors which is very bad
-            event_thread.join().ok();
-            message_thread.join().ok();
-        }); // builder thread
         Ok(())
+    }
+}
+
+fn create_shareable_mpv(window_handle: HWND) -> Arc<Mpv> {
+    let mpv = Mpv::with_initializer(|initializer| {
+        macro_rules! set_property {
+            ($name:literal, $value:expr) => {
+                initializer
+                    .set_property($name, $value)
+                    .expect(concat!("failed to set ", $name));
+            };
+        }
+        set_property!("wid", window_handle as i64);
+        // initializer.set_property("vo", "gpu").expect("unable to set vo");
+        // win, opengl: works but least performancy, 10-15% CPU
+        // winvk, vulkan: works as good as d3d11
+        // d3d11, d1d11: works great
+        // dxinterop, auto: works, slightly more cpu use than d3d11
+        // default (auto) seems to be d3d11 (vo/gpu/d3d11)
+        set_property!("gpu-context", "angle");
+        set_property!("gpu-api", "auto");
+        set_property!("title", "Stremio");
+        set_property!("terminal", "yes");
+        set_property!("msg-level", "all=no,cplayer=debug");
+        set_property!("quiet", "yes");
+        set_property!("hwdec", "auto");
+        // FIXME: very often the audio track isn't selected when using "aid" = "auto"
+        set_property!("aid", "1");
+        Ok(())
+    });
+    Arc::new(mpv.expect("cannot build MPV"))
+}
+
+fn create_event_thread(
+    mpv: Arc<Mpv>,
+    observe_property_receiver: Receiver<ObserveProperty>,
+    rpc_response_sender: Sender<String>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut event_context = mpv.create_event_context();
+        event_context
+            .disable_deprecated_events()
+            .expect("failed to disable deprecated MPV events");
+
+        // -- Event handler loop --
+
+        loop {
+            for ObserveProperty { name, format } in observe_property_receiver.drain() {
+                event_context
+                    .observe_property(&name, format, 0)
+                    .expect("failed to observer MPV property");
+            }
+
+            // -1.0 means to block and wait for an event.
+            let event = match event_context.wait_event(-1.) {
+                Some(Ok(event)) => event,
+                Some(Err(error)) => {
+                    eprintln!("Event errored: {error:?}");
+                    continue;
+                }
+                // dummy event received (may be created on a wake up call or on timeout)
+                None => continue,
+            };
+
+            // even if you don't do anything with the events, it is still necessary to empty the event loop
+            let player_response = match event {
+                Event::PropertyChange { name, change, .. } => PlayerResponse(
+                    "mpv-prop-change",
+                    PlayerEvent::PropChange(PlayerProprChange::from_name_value(
+                        name.to_string(),
+                        change,
+                    )),
+                ),
+                Event::EndFile(reason) => PlayerResponse(
+                    "mpv-event-ended",
+                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
+                ),
+                Event::Shutdown => {
+                    break;
+                }
+                _ => continue,
+            };
+
+            rpc_response_sender
+                .send(RPCResponse::response_message(player_response.to_value()))
+                .expect("failed to send RPCResponse");
+        }
+    })
+}
+
+fn create_message_thread(
+    mpv: Arc<Mpv>,
+    observe_property_sender: Sender<ObserveProperty>,
+    in_msg_receiver: Receiver<String>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        // -- Helpers --
+
+        let observe_property = |name: String, format: Format| {
+            observe_property_sender
+                .send(ObserveProperty { name, format })
+                .expect("cannot send ObserveProperty");
+            mpv.wake_up();
+        };
+
+        let send_command = |cmd: CmdVal| {
+            let (name, arg) = match cmd {
+                CmdVal::Double(name, arg) => (name, format!(r#""{arg}""#)),
+                CmdVal::Single((name,)) => (name, String::new()),
+            };
+            if let Err(error) = mpv.command(&name.to_string(), &[&arg]) {
+                eprintln!("failed to execute MPV command: '{error:#}'")
+            }
+        };
+
+        fn set_property(name: impl ToString, value: impl SetData, mpv: &Mpv) {
+            if let Err(error) = mpv.set_property(&name.to_string(), value) {
+                eprintln!("cannot set MPV property: '{error:#}'")
+            }
+        }
+
+        // -- InMsg handler loop --
+
+        for msg in in_msg_receiver.iter() {
+            let in_msg: InMsg = match serde_json::from_str(&msg) {
+                Ok(in_msg) => in_msg,
+                Err(error) => {
+                    eprintln!("cannot parse InMsg: {error:#}");
+                    continue;
+                }
+            };
+
+            match in_msg {
+                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Bool(prop))) => {
+                    observe_property(prop.to_string(), Format::Flag);
+                }
+                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Int(prop))) => {
+                    observe_property(prop.to_string(), Format::Int64);
+                }
+                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Fp(prop))) => {
+                    observe_property(prop.to_string(), Format::Double);
+                }
+                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Str(prop))) => {
+                    observe_property(prop.to_string(), Format::String);
+                }
+                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Bool(value))) => {
+                    set_property(name, value, &mpv);
+                }
+                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Num(value))) => {
+                    set_property(name, value, &mpv);
+                }
+                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Str(value))) => {
+                    set_property(name, value, &mpv);
+                }
+                InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd)) => {
+                    send_command(cmd);
+                }
+                msg => {
+                    eprintln!("MPV unsupported message: '{msg:?}'");
+                }
+            }
+        }
+    })
+}
+
+trait MpvExt {
+    fn wake_up(&self);
+}
+
+impl MpvExt for Mpv {
+    // @TODO create a PR to the `libmpv` crate and then remove `libmpv-sys` from Cargo.toml?
+    fn wake_up(&self) {
+        unsafe { libmpv_sys::mpv_wakeup(self.ctx.as_ptr()) }
     }
 }
