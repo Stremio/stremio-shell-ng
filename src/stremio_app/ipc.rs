@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::cell::RefCell;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub type Channel = RefCell<Option<(flume::Sender<String>, flume::Receiver<String>)>>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,7 +66,7 @@ impl RPCResponse {
                             "".to_string(),
                             "shellVersion".to_string(),
                             "".to_string(),
-                            "5.0.0".to_string(),
+                            VERSION.to_string(),
                         ],
                     ],
                     signals: vec![],
