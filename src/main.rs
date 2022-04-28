@@ -1,9 +1,8 @@
 #![windows_subsystem = "windows"]
 #[macro_use]
 extern crate bitflags;
+use clap::Parser;
 use native_windows_gui::{self as nwg, NativeUi};
-use structopt::StructOpt;
-
 mod stremio_app;
 use crate::stremio_app::{stremio_server::StremioServer, MainWindow};
 
@@ -11,16 +10,16 @@ const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
 const WEB_ENDPOINT: &str = "https://app.strem.io/shell-v4.4/";
 const STA_ENDPOINT: &str = "https://staging.strem.io/";
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "basic")]
+#[derive(Parser, Debug)]
+#[clap(version)]
 struct Opt {
-    #[structopt(long)]
+    #[clap(long, help = "Enable dev tools when pressing F12")]
     dev_tools: bool,
-    #[structopt(long)]
+    #[clap(long, help = "Disable the server and load the WebUI from localhost")]
     development: bool,
-    #[structopt(long)]
+    #[clap(long, help = "Shortcut for --webui-url=https://staging.strem.io/")]
     staging: bool,
-    #[structopt(long, default_value = WEB_ENDPOINT)]
+    #[clap(long, default_value = WEB_ENDPOINT, help = "Override the WebUI URL")]
     webui_url: String,
 }
 
@@ -36,7 +35,7 @@ fn main() {
     };
     nwg::enable_visual_styles();
 
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     if !opt.development {
         StremioServer::new();
