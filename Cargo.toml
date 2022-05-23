@@ -31,6 +31,8 @@ bitflags = "1.2.1"
 win32job = "1"
 parse-display = "0.5.1"
 flume = "0.10.9"
+kernel32-sys = "0.2"
+whoami = "1.2.1"
 
 [build-dependencies]
 embed-resource = "1.3"

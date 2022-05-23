@@ -1,7 +1,11 @@
+use crate::stremio_app::PipeServer;
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use serde_json;
 use std::cell::RefCell;
+use std::io::Read;
+use std::path::Path;
+use std::str;
 use std::thread;
 use winapi::um::winuser::WS_EX_TOPMOST;
 
@@ -14,6 +18,8 @@ use crate::stremio_app::window_helper::WindowStyle;
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
+    pub command: String,
+    pub commands_path: Option<String>,
     pub webui_url: String,
     pub dev_tools: bool,
     pub saved_window_style: RefCell<WindowStyle>,
@@ -42,6 +48,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_hide_splash_notice] )]
     pub hide_splash_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_focus_notice] )]
+    pub focus_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -97,7 +106,30 @@ impl MainWindow {
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
+        let web_tx_arg = web_tx.clone();
         let web_rx = web_rx.clone();
+        let command_clone = self.command.clone();
+
+        // Single application IPC
+        let socket_path = Path::new(
+            self.commands_path
+                .as_ref()
+                .expect("Cannot initialie the single application IPC"),
+        );
+        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+            thread::spawn(move || loop {
+                if let Ok(mut stream) = listener.accept() {
+                    let mut buf = vec![];
+                    stream.read_to_end(&mut buf).ok();
+                    if let Ok(s) = str::from_utf8(&buf) {
+                        // ['open-media', url]
+                        web_tx_arg.send(RPCResponse::open_media(s.to_string())).ok();
+                        println!("{}", s);
+                    }
+                }
+            });
+        }
+
         // Read message from player
         thread::spawn(move || loop {
             player_rx
@@ -109,6 +141,7 @@ impl MainWindow {
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
+        let focus_sender = self.focus_notice.sender();
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
                 .recv()
@@ -127,6 +160,10 @@ impl MainWindow {
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
                             .ok();
+                        let command_ref = command_clone.clone();
+                        if !command_ref.is_empty() {
+                            web_tx_web.send(RPCResponse::open_media(command_ref)).ok();
+                        }
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -151,6 +188,9 @@ impl MainWindow {
                                 open::that(arg).ok();
                             }
                         }
+                    }
+                    Some("win-focus") => {
+                        focus_sender.notice();
                     }
                     Some(player_command) if player_command.starts_with("mpv-") => {
                         let resp_json = serde_json::to_string(
@@ -191,6 +231,13 @@ impl MainWindow {
     }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();
+    }
+    fn on_focus_notice(&self) {
+        self.window.set_visible(true);
+        if let Some(hwnd) = self.window.handle.hwnd() {
+            let mut saved_style = self.saved_window_style.borrow_mut();
+            saved_style.set_active(hwnd);
+        }
     }
     fn on_toggle_topmost(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {

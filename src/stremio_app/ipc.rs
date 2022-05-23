@@ -99,4 +99,7 @@ impl RPCResponse {
             "state": state,
         }])))
     }
+    pub fn open_media(url: String) -> String {
+        Self::response_message(Some(json!(["open-media", url])))
+    }
 }

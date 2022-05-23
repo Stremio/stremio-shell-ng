@@ -2,8 +2,8 @@ use std::{cmp, mem};
 use winapi::shared::windef::HWND;
 use winapi::um::winuser::{
     GetForegroundWindow, GetSystemMetrics, GetWindowLongA, GetWindowRect, IsIconic, IsZoomed,
-    SetWindowLongA, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST,
-    SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION,
+    SetForegroundWindow, SetWindowLongA, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST,
+    HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION,
     WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
     WS_THICKFRAME,
 };
@@ -135,5 +135,10 @@ impl WindowStyle {
             );
         }
         self.ex_style = unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) };
+    }
+    pub fn set_active(&mut self, hwnd: HWND) {
+        unsafe {
+            SetForegroundWindow(hwnd);
+        }
     }
 }

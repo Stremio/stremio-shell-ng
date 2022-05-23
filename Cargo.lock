@@ -19,7 +19,7 @@ checksum = "d9b39be18770d11421cdb1b9947a45dd3f37e93092cbf377614828a319d5fee8"
 dependencies = [
  "hermit-abi",
  "libc",
- "winapi",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -221,6 +221,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel32-sys"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
+dependencies = [
+ "winapi 0.2.8",
+ "winapi-build",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -317,7 +327,7 @@ dependencies = [
  "plotters",
  "plotters-backend",
  "stretch",
- "winapi",
+ "winapi 0.3.9",
  "winapi-build",
 ]
 
@@ -343,7 +353,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9213e7b66aa06a7722828ee2980c1adff22a3922b582baaa1e62e30ca2a6c018"
 dependencies = [
  "pathdiff",
- "winapi",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -574,6 +584,7 @@ dependencies = [
  "clap",
  "embed-resource",
  "flume",
+ "kernel32-sys",
  "libmpv",
  "libmpv-sys",
  "native-windows-derive",
@@ -587,8 +598,9 @@ dependencies = [
  "urlencoding",
  "webview2",
  "webview2-sys",
+ "whoami",
  "win32job",
- "winapi",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -821,7 +833,7 @@ dependencies = [
  "once_cell",
  "webview2-sys",
  "widestring",
- "winapi",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -831,7 +843,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24b7889e893ac4c50d7346356be3ce13a85e56512c38b8fde0526559b8012a4c"
 dependencies = [
  "com",
- "winapi",
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "whoami"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "524b58fa5a20a2fb3014dd6358b70e6579692a56ef6fce928834e488f42f65e8"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -847,8 +869,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b2a14136f6c8be9146ac6345774ab32cb93e7985319b4a1b42abb663bd64235"
 dependencies = [
  "thiserror",
- "winapi",
+ "winapi 0.3.9",
 ]
+
+[[package]]
+name = "winapi"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "167dc9d6949a9b857f3451275e911c3f44255842c1f7a76f33c55103a909087a"
 
 [[package]]
 name = "winapi"
@@ -878,7 +906,7 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70ec6ce85bb158151cae5e5c87f95a8e97d2c0c4b001223f33a334e3ce5de178"
 dependencies = [
- "winapi",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -893,5 +921,5 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
- "winapi",
+ "winapi 0.3.9",
 ]

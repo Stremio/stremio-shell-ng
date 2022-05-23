@@ -14,3 +14,5 @@ pub mod splash;
 pub use splash::SplashImage;
 pub mod window_helper;
 pub use window_helper::WindowStyle;
+pub mod named_pipe;
+pub use named_pipe::{PipeClient, PipeServer};
