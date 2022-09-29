@@ -17,7 +17,7 @@ impl StremioServer {
             job.set_extended_limit_info(&mut info).ok();
             job.assign_current_process().ok();
             loop {
-                let mut child = Command::new("node")
+                let mut child = Command::new("stremio-runtime")
                     .arg("server.js")
                     .creation_flags(CREATE_NO_WINDOW)
                     .spawn()
