@@ -156,6 +156,7 @@ stringable!(IntProp);
 #[display(style = "kebab-case")]
 pub enum FpProp {
     TimePos,
+    Mute,
     Volume,
     Duration,
     SubScale,
