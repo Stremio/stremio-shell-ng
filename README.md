@@ -2,12 +2,6 @@
 
 A Windows-only shell using WebView2 and MPV
 
-The MPV library is obtained from [sourceForge](https://sourceforge.net/projects/mpv-player-windows/files/libmpv/) where the latest working DLL is in the build `mpv-dev-i686-20211212-git-0e76372`. It must be `mpv-1.dll` and not `mpv-2.dll` unless [libmpv-rs](https://github.com/ParadoxSpiral/libmpv-rs) update their repo. The `mpv.lib` file is generated with the developer prompt for VS2019 using the following command:
-
-```
-lib /def:mpv.def /machine:x86 /out:mpv.lib
-```
-
 Goals:
 * Performance
 * Reliability
