@@ -1,6 +1,5 @@
 use native_windows_gui as nwg;
 use std::os::windows::process::CommandExt;
-use std::env;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
