@@ -4,6 +4,7 @@ $files = @(
     "https://github.com/vot/ffbinaries-prebuilt/releases/download/v3.3/ffmpeg-3.3.4-win-32.zip"
     "https://github.com/vot/ffbinaries-prebuilt/releases/download/v3.3/ffprobe-3.3.4-win-32.zip"
     "https://nodejs.org/dist/v16.17.0/node-v16.17.0-win-x86.zip"
+    "http://www.angusj.com/resourcehacker/resource_hacker.zip"
 )
 
 New-Item -Path ".\bin" -ItemType Directory -Force

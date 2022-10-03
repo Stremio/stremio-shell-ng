@@ -1,0 +1,26 @@
+name: Build Installer
+
+on: [pull_request, push]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    # The Windows runners have autocrlf enabled by default
+    # which causes failures for some of rustfmt's line-ending sensitive tests
+    - name: disable git eol translation
+      run: git config --global core.autocrlf false
+    - name: checkout
+      uses: actions/checkout@v3
+    - name: Stable with rustfmt and clippy
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        components: rustfmt, clippy
+    - name: Build
+      run: cargo test
+    - uses: actions/upload-artifact@v3
+      with:
+        name: stremio-setup
+        path: Stremio*.exe

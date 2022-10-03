@@ -4,11 +4,13 @@
 set "rt_path=%~dpf1"
 set rt_exe="%rt_path%\stremio-runtime.exe"
 
-set rh="C:\RH\ResourceHacker.exe"
+::set rh="C:\RH\ResourceHacker.exe"
 
 pushd %~dp0
 pushd ..\bin
 set node="%cd%\node.exe"
+set rh="%cd%\ResourceHacker.exe"
+
 popd
 pushd ..\images
 set rt_icon="%cd%\stremio_gray.ico"
