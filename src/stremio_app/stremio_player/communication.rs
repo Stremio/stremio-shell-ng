@@ -7,7 +7,7 @@ use std::fmt;
 // Responses
 const JSON_RESPONSES: [&str; 3] = ["track-list", "video-params", "metadata"];
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct PlayerProprChange {
     name: String,
     data: serde_json::Value,
@@ -41,7 +41,7 @@ impl PlayerProprChange {
         }
     }
 }
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct PlayerEnded {
     reason: String,
 }
@@ -120,7 +120,7 @@ macro_rules! stringable {
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum InMsgFn {
@@ -130,7 +130,7 @@ pub enum InMsgFn {
 }
 stringable!(InMsgFn);
 // Bool
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum BoolProp {
@@ -141,7 +141,7 @@ pub enum BoolProp {
 }
 stringable!(BoolProp);
 // Int
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum IntProp {
@@ -151,7 +151,7 @@ pub enum IntProp {
 }
 stringable!(IntProp);
 // Fp
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum FpProp {
@@ -166,7 +166,7 @@ pub enum FpProp {
 }
 stringable!(FpProp);
 // Str
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum StrProp {
@@ -189,7 +189,7 @@ pub enum StrProp {
 stringable!(StrProp);
 
 // Any
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(untagged)]
 pub enum PropKey {
     Bool(BoolProp),
@@ -216,7 +216,7 @@ pub enum PropVal {
     Num(f64),
 }
 
-#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 #[serde(untagged)]
@@ -226,7 +226,7 @@ pub enum MpvCmd {
 }
 stringable!(MpvCmd);
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(untagged)]
 pub enum CmdVal {
     Single((MpvCmd,)),
