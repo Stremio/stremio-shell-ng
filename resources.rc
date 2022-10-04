@@ -1,3 +1,0 @@
-#define RT_MANIFEST 24
-MAINICON ICON "images/stremio.ico"
-SPLASHIMAGE IMAGE "images/stremio.png"
