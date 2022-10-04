@@ -2,11 +2,15 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "Stremio"
-#define MyAppVersion "5.0.0"
+#define MyAppExeName "stremio-shell-ng.exe"
+#define MyAppExeLocation SourcePath + "..\target\release\" + MyAppExeName
+#define MyAppVersion() GetVersionComponents(MyAppExeLocation, Local[0], Local[1], Local[2], Local[3]), \
+  Str(Local[0]) + "." + Str(Local[1]) + "." + Str(Local[2])
+
 #define MyAppPublisher "Smart Code OOD"
+#define MyAppCopyright "Copyright © " + GetDateTimeString('yyyy', '', '') + " " + MyAppPublisher
 #define MyAppURL "https://www.stremio.com/"
 #define MyAppGoodbyeURL "https://www.strem.io/goodbye"
-#define MyAppExeName "stremio-shell-ng.exe"
 #define AssocTorrentExt ".torrent"
 #define AssocTorrentKey StringChange(MyAppName, " ", "") + AssocTorrentExt
 #define AssocTorrentDesc "Bittorrent seed file"
@@ -21,6 +25,7 @@ AppId={{DD3870DA-AF3C-4C73-B010-72944AB610C6}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppCopyright={#MyAppCopyright} 
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
@@ -44,6 +49,7 @@ CloseApplications=yes
 WizardImageFile={#SourcePath}..\images\windows-installer.bmp
 WizardSmallImageFile={#SourcePath}..\images\windows-installer-header.bmp
 SetupIconFile={#SourcePath}..\images\stremio.ico
+UninstallDisplayIcon={app}\{#MyAppExeName},0
 
 [Code]
 function InitializeSetup: Boolean;
@@ -153,7 +159,7 @@ Name: "assoctorrent"; Description: "Associate {#MyAppName} with .torrent files"
 
 [Files]
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
-Source: "{#SourcePath}..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyAppExeLocation}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}..\mpv.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}..\bin\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}..\bin\ffprobe.exe"; DestDir: "{app}"; Flags: ignoreversion
