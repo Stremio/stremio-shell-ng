@@ -15,7 +15,7 @@ if defined missing (
 )
 
 :: Convert node to stremio-runtime
-if not exist "%mypath%..\stremio-runtime.exe" (
+if not exist "%mypath%..\bin\stremio-runtime.exe" (
     call "%mypath%generate_stremio-runtime.bat" %mypath%..\bin
 ) else (
     echo The executable stremio-runtime.exe is already generated
