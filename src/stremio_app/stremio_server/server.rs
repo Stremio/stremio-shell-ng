@@ -15,7 +15,7 @@ impl StremioServer {
             let job = Job::create().expect("Cannont create job");
             let mut info = job.query_extended_limit_info().expect("Cannont get info");
             info.limit_kill_on_job_close();
-            job.set_extended_limit_info(&mut info).ok();
+            job.set_extended_limit_info(&info).ok();
             job.assign_current_process().ok();
             loop {
                 let child = Command::new("./stremio-runtime")

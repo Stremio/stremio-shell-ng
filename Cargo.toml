@@ -4,35 +4,35 @@ version = "5.0.0"
 edition = "2018"
 
 [dependencies]
-once_cell = "1.3.1"
-native-windows-gui = { version = "1.0.4", features = [
+once_cell = "1.19"
+native-windows-gui = { version = "1", features = [
     "high-dpi",
     "notice",
     "tray-notification",
     "menu",
 ] }
-native-windows-derive = "1.0.3"
+native-windows-derive = "1"
 winapi = { version = "0.3.9", features = [
     "libloaderapi",
     "handleapi",
     "wincon",
     "winuser",
+    "namedpipeapi"
 ] }
-webview2 = "0.1.0"
-webview2-sys = "0.1.0-beta.1"
-libmpv = "2.0.1"    
-libmpv-sys = "3.1.0"
+webview2 = "0.1.4"
+webview2-sys = "0.1.1"
+libmpv-sirno = "2.0.2-fork.1"
+libmpv-sys-sirno = "2.0.0-fork.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "3.1.12", features = ["derive", "unicode"] }
-open = "2"
-urlencoding = "2.1.0"
-bitflags = "1.2.1"
-win32job = "1"
-parse-display = "0.5.1"
-flume = "0.10.9"
-kernel32-sys = "0.2"
-whoami = "1.2.1"
+clap = { version = "4", features = ["derive", "unicode"] }
+open = "5"
+urlencoding = "2"
+bitflags = "2"
+win32job = "2"
+parse-display = "0.9"
+flume = "0.11"
+whoami = "1.5"
 
 [build-dependencies]
 winres = "0.1"

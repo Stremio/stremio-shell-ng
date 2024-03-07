@@ -94,30 +94,25 @@ impl PartialUi for WebView {
                                 tx_web.clone().send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
                         };
                     }
-                        webview
-                            .add_script_to_execute_on_document_created(
-                                r##"
-                            try{if(window.self === window.top) {
+                        webview.execute_script(r##"
+                        try{console.log('Shell JS injected');if(window.self === window.top) {
                             window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                             window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
                             window.onload=()=>{try{initShellComm();}catch(e){window.chrome.webview.postMessage('{"id":1,"args":["app-error","'+e.message+'"]}')}};
                             }}catch(e){}
-                            "##,
-                                |_| Ok(()),
-                            )
-                            .ok();
+                        "##, |_| Ok(())).expect("Cannot add script to webview");
                         webview.add_web_message_received(move |_w, msg| {
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
                             Ok(())
-                        }).ok();
+                        }).expect("Cannot add web message received");
                         webview.add_new_window_requested(move |_w, msg| {
                             if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(str.as_str()).ok().map(Cow::into_owned)}) {
                                 tx_drag_drop.send(ipc::RPCResponse::response_message(Some(json!(["dragdrop" ,[file]])))).ok();
                                 msg.put_handled(true).ok();
                             }
                             Ok(())
-                        }).ok();
+                        }).expect("Cannot add D&D handler");
 
                         WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
                         controller_clone
@@ -128,7 +123,7 @@ impl PartialUi for WebView {
             });
         if let Err(e) = result {
             nwg::modal_fatal_message(
-                &parent,
+                parent,
                 "Failed to Create WebView2 Environment",
                 &format!("{}", e),
             );
@@ -170,6 +165,7 @@ impl PartialUi for WebView {
         use nwg::Event as E;
         match evt {
             E::OnPaint => {
+                // TODO: somehow debounce this
                 WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
             }
             E::OnWindowMinimize => {

@@ -1,25 +1,27 @@
 // Based on
 // https://gitlab.com/tbsaunde/windows-named-pipe/-/blob/f4fd29191f0541f85f818885275dc4573d4059ec/src/lib.rs
 
-use kernel32::{
-    CloseHandle, ConnectNamedPipe, CreateFileW, CreateNamedPipeW, DisconnectNamedPipe,
-    FlushFileBuffers, ReadFile, WaitNamedPipeW, WriteFile,
-};
-use std::ffi::OsStr;
-use std::ffi::OsString;
+// use kernel32::{
+//     CloseHandle, ConnectNamedPipe, CreateFileW, CreateNamedPipeW, DisconnectNamedPipe,
+//     FlushFileBuffers, ReadFile, WaitNamedPipeW, WriteFile,
+// };
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::windows::prelude::OsStrExt;
 use std::path::Path;
 use winapi::shared::minwindef::{DWORD, LPCVOID, LPVOID};
 use winapi::shared::winerror;
 use winapi::um::fileapi::OPEN_EXISTING;
-use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+use winapi::um::fileapi::{CreateFileW, FlushFileBuffers, ReadFile, WriteFile};
+use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+use winapi::um::namedpipeapi::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
+};
 use winapi::um::winbase::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use winapi::um::winnt::{FILE_ATTRIBUTE_NORMAL, GENERIC_READ, GENERIC_WRITE, HANDLE};
-
 #[derive(Debug)]
 pub struct PipeClient {
     is_server: bool,
@@ -33,7 +35,7 @@ impl PipeClient {
         let u16_slice = os_str.encode_wide().collect::<Vec<u16>>();
 
         unsafe { WaitNamedPipeW(u16_slice.as_ptr(), 0) };
-        let handle = unsafe {
+        let handle: *mut winapi::ctypes::c_void = unsafe {
             CreateFileW(
                 u16_slice.as_ptr(),
                 GENERIC_READ | GENERIC_WRITE,
