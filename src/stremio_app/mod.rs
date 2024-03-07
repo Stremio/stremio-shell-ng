@@ -1,12 +1,12 @@
 pub mod app;
 pub use app::MainWindow;
-pub mod stremio_wevbiew;
+pub mod ipc;
 pub mod stremio_player;
 pub mod stremio_server;
-pub mod ipc;
+pub mod stremio_wevbiew;
 pub use ipc::RPCResponse;
-pub mod systray;
-pub mod splash;
-pub mod window_helper;
 pub mod named_pipe;
+pub mod splash;
+pub mod systray;
+pub mod window_helper;
 pub use named_pipe::{PipeClient, PipeServer};
