@@ -1,10 +1,6 @@
 // Based on
 // https://gitlab.com/tbsaunde/windows-named-pipe/-/blob/f4fd29191f0541f85f818885275dc4573d4059ec/src/lib.rs
 
-// use kernel32::{
-//     CloseHandle, ConnectNamedPipe, CreateFileW, CreateNamedPipeW, DisconnectNamedPipe,
-//     FlushFileBuffers, ReadFile, WaitNamedPipeW, WriteFile,
-// };
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::os::windows::prelude::OsStrExt;
