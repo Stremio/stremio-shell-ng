@@ -28,7 +28,7 @@ pub struct MainWindow {
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
     #[nwg_control(icon: Some(&data.window_icon), title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
-    #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMaximize: [Self::transmit_window_state_change], OnWindowMinimize: [Self::transmit_window_state_change] )]
+    #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
     #[nwg_events((tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
@@ -214,8 +214,6 @@ impl MainWindow {
     fn on_paint(&self) {
         if self.splash_screen.visible() {
             self.splash_screen.resize(self.window.size());
-        } else {
-            self.transmit_window_state_change();
         }
     }
     fn on_toggle_fullscreen_notice(&self) {
