@@ -28,7 +28,7 @@ pub struct MainWindow {
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
     #[nwg_control(icon: Some(&data.window_icon), title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
-    #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change] )]
+    #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change], OnWindowMaximize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
     #[nwg_events((tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
@@ -62,33 +62,46 @@ impl MainWindow {
             .as_ref()
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_app = web_tx.clone();
-        let saved_style = self.saved_window_style.borrow();
-        web_tx_app
-            .send(RPCResponse::visibility_change(
-                self.window.visible(),
-                prevent_close as u32,
-                saved_style.full_screen,
-            ))
-            .ok();
+        let full_screen = {
+            self.saved_window_style
+                .try_borrow()
+                .ok()
+                .map(|saved_style| saved_style.full_screen)
+        };
+        if let Some(full_screen) = full_screen {
+            web_tx_app
+                .send(RPCResponse::visibility_change(
+                    self.window.visible(),
+                    prevent_close as u32,
+                    full_screen,
+                ))
+                .ok();
+        }
     }
     fn transmit_window_state_change(&self) {
-        if let Some(hwnd) = self.window.handle.hwnd() {
-            let web_channel = self.webview.channel.borrow();
+        if let (Some(hwnd), Ok(web_channel), Ok(style)) = (
+            self.window.handle.hwnd(),
+            self.webview.channel.try_borrow(),
+            self.saved_window_style.try_borrow(),
+        ) {
+            let state = style.clone().get_window_state(hwnd);
+            drop(style);
             let (web_tx, _) = web_channel
                 .as_ref()
                 .expect("Cannont obtain communication channel for the Web UI");
             let web_tx_app = web_tx.clone();
-            let style = self.saved_window_style.borrow();
-            let state = style.clone().get_window_state(hwnd);
             web_tx_app.send(RPCResponse::state_change(state)).ok();
+        } else {
+            eprintln!("Cannot obtain window handle or communication channel");
         }
     }
     fn on_init(&self) {
         self.webview.endpoint.set(self.webui_url.clone()).ok();
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
-            let mut saved_style = self.saved_window_style.borrow_mut();
-            saved_style.center_window(hwnd, Self::MIN_WIDTH, Self::MIN_HEIGHT);
+            if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
+                saved_style.center_window(hwnd, Self::MIN_WIDTH, Self::MIN_HEIGHT);
+            }
         }
 
         self.tray.tray_show_hide.set_checked(true);
@@ -218,14 +231,16 @@ impl MainWindow {
     }
     fn on_toggle_fullscreen_notice(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
-            let mut saved_style = self.saved_window_style.borrow_mut();
-            saved_style.toggle_full_screen(hwnd);
-            self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
-            self.tray
-                .tray_topmost
-                .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
+            if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
+                saved_style.toggle_full_screen(hwnd);
+                self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
+                self.tray
+                    .tray_topmost
+                    .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
+                drop(saved_style);
+                self.transmit_window_full_screen_change(true);
+            }
         }
-        self.transmit_window_full_screen_change(true);
     }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();
@@ -233,17 +248,19 @@ impl MainWindow {
     fn on_focus_notice(&self) {
         self.window.set_visible(true);
         if let Some(hwnd) = self.window.handle.hwnd() {
-            let mut saved_style = self.saved_window_style.borrow_mut();
-            saved_style.set_active(hwnd);
+            if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
+                saved_style.set_active(hwnd);
+            }
         }
     }
     fn on_toggle_topmost(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
-            let mut saved_style = self.saved_window_style.borrow_mut();
-            saved_style.toggle_topmost(hwnd);
-            self.tray
-                .tray_topmost
-                .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
+            if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
+                saved_style.toggle_topmost(hwnd);
+                self.tray
+                    .tray_topmost
+                    .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
+            }
         }
     }
     fn on_show_hide(&self) {
