@@ -16,6 +16,7 @@ use winapi::um::winuser::{GetClientRect, WM_SETFOCUS};
 
 #[derive(Default)]
 pub struct WebView {
+    pub disable_gpu: Rc<OnceCell<bool>>,
     pub endpoint: Rc<OnceCell<String>>,
     pub dev_tools: Rc<OnceCell<bool>>,
     pub controller: Rc<OnceCell<Controller>>,
@@ -69,8 +70,14 @@ impl PartialUi for WebView {
         let controller_clone = data.controller.clone();
         let endpoint = data.endpoint.clone();
         let dev_tools = data.dev_tools.clone();
+        let webview_flags = "--disable-web-security --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+        let webview_flags = if *data.disable_gpu.get().unwrap() {
+            format!("{} {}", webview_flags, "--disable-gpu")
+        } else {
+            webview_flags.to_string()
+        };
         let result = webview2::EnvironmentBuilder::new()
-            .with_additional_browser_arguments("--disable-web-security --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection")
+            .with_additional_browser_arguments(&webview_flags)
             .build(move |env| {
                 env.expect("Cannot obtain webview environment")
                     .create_controller(hwnd, move |controller| {

@@ -25,6 +25,8 @@ struct Opt {
     start_hidden: bool,
     #[clap(long, help = "Enable dev tools when pressing F12")]
     dev_tools: bool,
+    #[clap(long, help = "Use software rendering for the webview")]
+    disable_gpu: bool,
     #[clap(long, help = "Disable the server and load the WebUI from localhost")]
     development: bool,
     #[clap(long, help = "Shortcut for --webui-url=https://staging.strem.io/")]
@@ -93,6 +95,7 @@ fn main() {
         commands_path: Some(commands_path),
         webui_url,
         dev_tools: opt.development || opt.dev_tools,
+        disable_gpu: opt.disable_gpu,
         start_hidden: opt.start_hidden,
         autoupdater_endpoint: opt.autoupdater_endpoint,
         force_update: opt.force_update,
