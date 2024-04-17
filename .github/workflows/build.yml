@@ -17,8 +17,11 @@ jobs:
       with:
         profile: minimal
         toolchain: stable
-    - name: Build
-      run: setup\create_setup.bat
+    - name: Build main application
+      run: cargo build --release
+    - name: Build the setup proggam
+      run: |
+        & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' '/Sstremiosign=$qC:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x86\signtool.exe$q sign /f $q${{ github.workspace }}\certificates\smartcode-20211118-20241118.pfx$q /p ${{ secrets.WIN_CERT_PASSWORD }} /v $f' '%mypath%Stremio.iss'
     - uses: actions/upload-artifact@v3
       with:
         name: stremio-setup
