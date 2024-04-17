@@ -223,17 +223,6 @@ mod tests {
     use super::*;
     use std::thread;
 
-    macro_rules! or_panic {
-        ($e:expr) => {
-            match $e {
-                Ok(e) => e,
-                Err(e) => {
-                    panic!("{}", e);
-                }
-            }
-        };
-    }
-
     #[test]
     fn duplex_communication() {
         let socket_path = Path::new("//./pipe/basicsock");
@@ -241,20 +230,20 @@ mod tests {
         let msg1 = b"hello";
         let msg2 = b"world!";
 
-        let mut listener = or_panic!(PipeServer::bind(socket_path));
+        let mut listener = PipeServer::bind(socket_path).unwrap();
         let thread = thread::spawn(move || {
-            let mut stream = or_panic!(listener.accept());
+            let mut stream = listener.accept().unwrap();
             let mut buf = [0; 5];
-            or_panic!(stream.read(&mut buf));
+            stream.read(&mut buf).unwrap();
             assert_eq!(&msg1[..], &buf[..]);
-            or_panic!(stream.write_all(msg2));
+            stream.write_all(msg2).unwrap();
         });
 
-        let mut stream = or_panic!(PipeClient::connect(socket_path));
+        let mut stream = PipeClient::connect(socket_path).unwrap();
 
-        or_panic!(stream.write_all(msg1));
+        stream.write_all(msg1).unwrap();
         let mut buf = vec![];
-        or_panic!(stream.read_to_end(&mut buf));
+        stream.read_to_end(&mut buf).unwrap();
         assert_eq!(&msg2[..], &buf[..]);
         drop(stream);
 
