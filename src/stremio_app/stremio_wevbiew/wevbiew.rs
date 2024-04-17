@@ -178,18 +178,15 @@ impl PartialUi for WebView {
         _handle: nwg::ControlHandle,
     ) {
         use nwg::Event as E;
-        match evt {
-            E::OnNotice => {
-                let message_queue = self.message_queue.clone();
-                if let Some(controller) = self.controller.get() {
-                    let webview = controller.get_webview().expect("Cannot get vebview");
-                    let mut message_queue = message_queue.lock().unwrap();
-                    for msg in message_queue.drain(..) {
-                        webview.post_web_message_as_string(msg.as_str()).ok();
-                    }
+        if evt == E::OnNotice {
+            let message_queue = self.message_queue.clone();
+            if let Some(controller) = self.controller.get() {
+                let webview = controller.get_webview().expect("Cannot get vebview");
+                let mut message_queue = message_queue.lock().unwrap();
+                for msg in message_queue.drain(..) {
+                    webview.post_web_message_as_string(msg.as_str()).ok();
                 }
             }
-            _ => {}
         }
     }
 }
