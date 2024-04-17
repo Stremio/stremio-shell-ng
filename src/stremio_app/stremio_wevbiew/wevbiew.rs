@@ -16,7 +16,6 @@ use winapi::um::winuser::{GetClientRect, WM_SETFOCUS};
 
 #[derive(Default)]
 pub struct WebView {
-    pub disable_gpu: Rc<OnceCell<bool>>,
     pub endpoint: Rc<OnceCell<String>>,
     pub dev_tools: Rc<OnceCell<bool>>,
     pub controller: Rc<OnceCell<Controller>>,
@@ -55,6 +54,7 @@ impl PartialUi for WebView {
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
+        println!("Building WebView");
         let (tx, rx) = flume::unbounded();
         let tx_drag_drop = tx.clone();
         let (tx_web, rx_web) = flume::unbounded();
@@ -71,13 +71,8 @@ impl PartialUi for WebView {
         let endpoint = data.endpoint.clone();
         let dev_tools = data.dev_tools.clone();
         let webview_flags = "--disable-web-security --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
-        let webview_flags = if *data.disable_gpu.get().unwrap() {
-            format!("{} {}", webview_flags, "--disable-gpu")
-        } else {
-            webview_flags.to_string()
-        };
         let result = webview2::EnvironmentBuilder::new()
-            .with_additional_browser_arguments(&webview_flags)
+            .with_additional_browser_arguments(webview_flags)
             .build(move |env| {
                 env.expect("Cannot obtain webview environment")
                     .create_controller(hwnd, move |controller| {
@@ -184,11 +179,6 @@ impl PartialUi for WebView {
     ) {
         use nwg::Event as E;
         match evt {
-            E::OnWindowMinimize => {
-                if let Some(controller) = self.controller.get() {
-                    controller.put_is_visible(false).ok();
-                }
-            }
             E::OnNotice => {
                 let message_queue = self.message_queue.clone();
                 if let Some(controller) = self.controller.get() {

@@ -32,7 +32,6 @@ pub struct MainWindow {
     pub commands_path: Option<String>,
     pub webui_url: String,
     pub dev_tools: bool,
-    pub disable_gpu: bool,
     pub start_hidden: bool,
     pub autoupdater_endpoint: Option<Url>,
     pub force_update: bool,
@@ -112,7 +111,6 @@ impl MainWindow {
     fn on_init(&self) {
         self.webview.endpoint.set(self.webui_url.clone()).ok();
         self.webview.dev_tools.set(self.dev_tools).ok();
-        self.webview.disable_gpu.set(self.disable_gpu).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
                 saved_style.center_window(hwnd, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
