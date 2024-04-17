@@ -21,8 +21,19 @@ jobs:
       run: cargo build --release
     - name: Build the setup proggam
       run: |
-        & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' '/Sstremiosign=$qC:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x86\signtool.exe$q sign /f $q${{ github.workspace }}\certificates\smartcode-20211118-20241118.pfx$q /p ${{ secrets.WIN_CERT_PASSWORD }} /v $f' '${{ github.workspace }}\setup\Stremio.iss'
+        & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DSIGN '/Sstremiosign=$qC:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x86\signtool.exe$q sign /f $q${{ github.workspace }}\certificates\smartcode-20211118-20241118.pfx$q /p ${{ secrets.WIN_CERT_PASSWORD }} /v $f' '${{ github.workspace }}\setup\Stremio.iss'
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+        aws-region: eu-west-1
+
+    - name: Upload to Amazon S3
+      run: |
+        aws s3 cp --acl public-read StremioSetup*.exe s3://stremio-artifacts/stremio-shell-ng/${{ github.ref_name }}/
+
     - uses: actions/upload-artifact@v3
       with:
         name: stremio-setup
-        path: Stremio*.exe
+        path: StremioSetup*.exe

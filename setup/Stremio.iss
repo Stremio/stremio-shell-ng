@@ -38,7 +38,7 @@ DisableDirPage=yes
 DisableProgramGroupPage=yes
 ; DisableFinishedPage=yes
 ChangesAssociations=yes
-OutputBaseFilename={#MyAppName} {#MyAppVersion}
+OutputBaseFilename={#MyAppName}Setup-v{#MyAppVersion}
 OutputDir=..
 Compression=lzma
 SolidCompression=yes
@@ -50,8 +50,10 @@ WizardImageFile={#SourcePath}..\images\windows-installer.bmp
 WizardSmallImageFile={#SourcePath}..\images\windows-installer-header.bmp
 SetupIconFile={#SourcePath}..\images\stremio.ico
 UninstallDisplayIcon={app}\{#MyAppExeName},0
+#ifdef SIGN
 SignTool=stremiosign
 SignedUninstaller=yes
+#endif
 
 [Code]
 function InitializeSetup: Boolean;
