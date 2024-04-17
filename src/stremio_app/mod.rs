@@ -10,3 +10,5 @@ pub mod splash;
 pub mod systray;
 pub mod window_helper;
 pub use named_pipe::{PipeClient, PipeServer};
+pub mod constants;
+pub mod updater;

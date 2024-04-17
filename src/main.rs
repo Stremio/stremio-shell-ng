@@ -1,24 +1,28 @@
-#![windows_subsystem = "windows"]
+#![cfg_attr(all(not(test), not(debug_assertions)), windows_subsystem = "windows")]
 #[macro_use]
 extern crate bitflags;
-use std::io::Write;
-use std::path::Path;
-use std::process::exit;
+use std::{io::Write, path::Path, process::exit};
+use url::Url;
 use whoami::username;
 
 use clap::Parser;
 use native_windows_gui::{self as nwg, NativeUi};
 mod stremio_app;
-use crate::stremio_app::{stremio_server::StremioServer, MainWindow, PipeClient};
-
-const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
-const WEB_ENDPOINT: &str = "https://app.strem.io/shell-v4.4/";
-const STA_ENDPOINT: &str = "https://staging.strem.io/";
+use crate::stremio_app::{
+    constants::{DEV_ENDPOINT, IPC_PATH, STA_ENDPOINT, WEB_ENDPOINT},
+    stremio_server::StremioServer,
+    MainWindow, PipeClient,
+};
 
 #[derive(Parser, Debug)]
 #[clap(version)]
 struct Opt {
     command: Option<String>,
+    #[clap(
+        long,
+        help = "Start the app only in system tray and keep the window hidden"
+    )]
+    start_hidden: bool,
     #[clap(long, help = "Enable dev tools when pressing F12")]
     dev_tools: bool,
     #[clap(long, help = "Disable the server and load the WebUI from localhost")]
@@ -27,6 +31,12 @@ struct Opt {
     staging: bool,
     #[clap(long, default_value = WEB_ENDPOINT, help = "Override the WebUI URL")]
     webui_url: String,
+    #[clap(long, help = "Ovveride autoupdater endpoint")]
+    autoupdater_endpoint: Option<Url>,
+    #[clap(long, help = "Forces reinstalling current version")]
+    force_update: bool,
+    #[clap(long, help = "Check for RC updates")]
+    release_candidate: bool,
 }
 
 fn main() {
@@ -55,7 +65,7 @@ fn main() {
     };
 
     // Single application IPC
-    let mut commands_path = "//./pipe/com.stremio5.".to_string();
+    let mut commands_path = IPC_PATH.to_string();
     // Append the username so it works per User
     commands_path.push_str(&username());
     let socket_path = Path::new(&commands_path);
@@ -83,6 +93,10 @@ fn main() {
         commands_path: Some(commands_path),
         webui_url,
         dev_tools: opt.development || opt.dev_tools,
+        start_hidden: opt.start_hidden,
+        autoupdater_endpoint: opt.autoupdater_endpoint,
+        force_update: opt.force_update,
+        release_candidate: opt.release_candidate,
         ..Default::default()
     })
     .expect("Failed to build UI");

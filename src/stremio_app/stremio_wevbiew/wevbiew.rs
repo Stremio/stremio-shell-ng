@@ -18,7 +18,7 @@ use winapi::um::winuser::{GetClientRect, WM_SETFOCUS};
 pub struct WebView {
     pub endpoint: Rc<OnceCell<String>>,
     pub dev_tools: Rc<OnceCell<bool>>,
-    controller: Rc<OnceCell<Controller>>,
+    pub controller: Rc<OnceCell<Controller>>,
     pub channel: ipc::Channel,
     notice: nwg::Notice,
     compute: RefCell<Option<thread::JoinHandle<()>>>,
@@ -26,17 +26,25 @@ pub struct WebView {
 }
 
 impl WebView {
-    fn resize_to_window_bounds_and_show(controller: Option<&Controller>, hwnd: Option<HWND>) {
+    pub fn fit_to_window(&self, hwnd: Option<HWND>) {
+        if let Some(hwnd) = hwnd {
+            unsafe {
+                let mut rect = mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                self.controller
+                    .get()
+                    .and_then(|controller| controller.put_bounds(rect).ok());
+            }
+        }
+    }
+
+    fn resize_to_window_bounds(controller: Option<&Controller>, hwnd: Option<HWND>) {
         if let (Some(controller), Some(hwnd)) = (controller, hwnd) {
             unsafe {
                 let mut rect = mem::zeroed();
                 GetClientRect(hwnd, &mut rect);
                 controller.put_bounds(rect).ok();
             }
-            controller.put_is_visible(true).ok();
-            controller
-                .move_focus(webview2::MoveFocusReason::Programmatic)
-                .ok();
         }
     }
 }
@@ -62,7 +70,7 @@ impl PartialUi for WebView {
         let endpoint = data.endpoint.clone();
         let dev_tools = data.dev_tools.clone();
         let result = webview2::EnvironmentBuilder::new()
-            .with_additional_browser_arguments("--disable-web-security --disable-gpu --autoplay-policy=no-user-gesture-required")
+            .with_additional_browser_arguments("--disable-web-security --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection")
             .build(move |env| {
                 env.expect("Cannot obtain webview environment")
                     .create_controller(hwnd, move |controller| {
@@ -114,7 +122,12 @@ impl PartialUi for WebView {
                             Ok(())
                         }).expect("Cannot add D&D handler");
 
-                        WebView::resize_to_window_bounds_and_show(Some(&controller), Some(hwnd));
+                        WebView::resize_to_window_bounds(Some(&controller), Some(hwnd));
+                        controller.put_is_visible(true).ok();
+                        controller
+                            .move_focus(webview2::MoveFocusReason::Programmatic)
+                            .ok();
+
                         controller_clone
                             .set(controller)
                             .expect("Cannot update the controller");
@@ -160,14 +173,10 @@ impl PartialUi for WebView {
         &self,
         evt: nwg::Event,
         _evt_data: &nwg::EventData,
-        handle: nwg::ControlHandle,
+        _handle: nwg::ControlHandle,
     ) {
         use nwg::Event as E;
         match evt {
-            E::OnPaint => {
-                // TODO: somehow debounce this
-                WebView::resize_to_window_bounds_and_show(self.controller.get(), handle.hwnd());
-            }
             E::OnWindowMinimize => {
                 if let Some(controller) = self.controller.get() {
                     controller.put_is_visible(false).ok();

@@ -33,6 +33,13 @@ win32job = "2"
 parse-display = "0.9"
 flume = "0.11"
 whoami = "1.5"
+anyhow = "1"
+semver = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["stream", "json", "blocking"] }
+rand = "0.8"
+url = { version = "2", features = ["serde"] }
+
 
 [build-dependencies]
 winres = "0.1"

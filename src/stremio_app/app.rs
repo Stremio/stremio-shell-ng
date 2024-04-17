@@ -1,20 +1,30 @@
-use crate::stremio_app::PipeServer;
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
+use rand::Rng;
 use serde_json;
-use std::cell::RefCell;
-use std::io::Read;
-use std::path::Path;
-use std::str;
-use std::thread;
+use std::{
+    cell::RefCell,
+    io::Read,
+    path::{Path, PathBuf},
+    process::{self, Command},
+    str,
+    sync::{Arc, Mutex},
+    thread, time,
+};
+use url::Url;
 use winapi::um::winuser::WS_EX_TOPMOST;
 
-use crate::stremio_app::ipc::{RPCRequest, RPCResponse};
-use crate::stremio_app::splash::SplashImage;
-use crate::stremio_app::stremio_player::Player;
-use crate::stremio_app::stremio_wevbiew::WebView;
-use crate::stremio_app::systray::SystemTray;
-use crate::stremio_app::window_helper::WindowStyle;
+use crate::stremio_app::{
+    constants::{APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH},
+    ipc::{RPCRequest, RPCResponse},
+    splash::SplashImage,
+    stremio_player::Player,
+    stremio_wevbiew::WebView,
+    systray::SystemTray,
+    updater,
+    window_helper::WindowStyle,
+    PipeServer,
+};
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
@@ -22,12 +32,17 @@ pub struct MainWindow {
     pub commands_path: Option<String>,
     pub webui_url: String,
     pub dev_tools: bool,
+    pub start_hidden: bool,
+    pub autoupdater_endpoint: Option<Url>,
+    pub force_update: bool,
+    pub release_candidate: bool,
+    pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
-    #[nwg_control(icon: Some(&data.window_icon), title: "Stremio", flags: "MAIN_WINDOW|VISIBLE")]
+    #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change], OnWindowMaximize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
@@ -54,8 +69,6 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    const MIN_WIDTH: i32 = 1000;
-    const MIN_HEIGHT: i32 = 600;
     fn transmit_window_full_screen_change(&self, prevent_close: bool) {
         let web_channel = self.webview.channel.borrow();
         let (web_tx, _) = web_channel
@@ -100,11 +113,12 @@ impl MainWindow {
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
-                saved_style.center_window(hwnd, Self::MIN_WIDTH, Self::MIN_HEIGHT);
+                saved_style.center_window(hwnd, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
             }
         }
 
-        self.tray.tray_show_hide.set_checked(true);
+        self.window.set_visible(!self.start_hidden);
+        self.tray.tray_show_hide.set_checked(!self.start_hidden);
 
         let player_channel = self.player.channel.borrow();
         let (player_tx, player_rx) = player_channel
@@ -120,6 +134,7 @@ impl MainWindow {
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
         let web_tx_arg = web_tx.clone();
+        let web_tx_upd = web_tx.clone();
         let web_rx = web_rx.clone();
         let command_clone = self.command.clone();
 
@@ -129,6 +144,42 @@ impl MainWindow {
                 .as_ref()
                 .expect("Cannot initialie the single application IPC"),
         );
+
+        let autoupdater_endpoint = self.autoupdater_endpoint.clone();
+        let force_update = self.force_update;
+        let release_candidate = self.release_candidate;
+        let autoupdater_setup_file = self.autoupdater_setup_file.clone();
+        thread::spawn(move || loop {
+            let current_version = env!("CARGO_PKG_VERSION")
+                .parse()
+                .expect("Should always be valid");
+            let updater_endpoint = if let Some(ref endpoint) = autoupdater_endpoint {
+                endpoint.clone()
+            } else {
+                let mut rng = rand::thread_rng();
+                let index = rng.gen_range(0..UPDATE_ENDPOINT.len());
+                let mut url = Url::parse(UPDATE_ENDPOINT[index]).unwrap();
+                if release_candidate {
+                    url.query_pairs_mut().append_pair("rc", "true");
+                }
+                url
+            };
+            let updater = updater::Updater::new(current_version, &updater_endpoint, force_update);
+
+            match updater.autoupdate() {
+                Ok(Some(update)) => {
+                    println!("New version ready to install v{}", update.version);
+                    let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
+                    *autoupdater_setup_file = Some(update.file.clone());
+                    web_tx_upd.send(RPCResponse::update_available()).ok();
+                }
+                Ok(None) => println!("No new updates found"),
+                Err(e) => eprintln!("Failed to fetch updates: {e}"),
+            }
+
+            thread::sleep(time::Duration::from_secs(UPDATE_INTERVAL));
+        }); // thread
+
         if let Ok(mut listener) = PipeServer::bind(socket_path) {
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
@@ -155,6 +206,7 @@ impl MainWindow {
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
         let focus_sender = self.focus_notice.sender();
+        let autoupdater_setup_mutex = self.autoupdater_setup_file.clone();
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
                 .recv()
@@ -205,6 +257,39 @@ impl MainWindow {
                     Some("win-focus") => {
                         focus_sender.notice();
                     }
+                    Some("autoupdater-notif-clicked") => {
+                        // We've shown the "Update Available" notification
+                        // and the user clicked on "Restart And Update"
+                        let autoupdater_setup_file =
+                            autoupdater_setup_mutex.lock().unwrap().clone();
+                        match autoupdater_setup_file {
+                            Some(file_path) => {
+                                println!("Running the setup at {:?}", file_path);
+
+                                let command = Command::new(file_path)
+                                    .args([
+                                        "/SILENT",
+                                        "/NOCANCEL",
+                                        "/FORCECLOSEAPPLICATIONS",
+                                        "/TASKS=runapp",
+                                    ])
+                                    .stdout(process::Stdio::null())
+                                    .stderr(process::Stdio::null())
+                                    .spawn();
+
+                                match command {
+                                    Ok(process) => {
+                                        println!("Updater started. (PID {:?})", process.id());
+                                        quit_sender.notice();
+                                    }
+                                    Err(err) => eprintln!("Updater couldn't be started: {err}"),
+                                };
+                            }
+                            _ => {
+                                println!("Cannot obtain the setup file path");
+                            }
+                        }
+                    }
                     Some(player_command) if player_command.starts_with("mpv-") => {
                         let resp_json = serde_json::to_string(
                             &msg.args.expect("Cannot have method without args"),
@@ -222,11 +307,13 @@ impl MainWindow {
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
-        data.set_min_size(Self::MIN_WIDTH, Self::MIN_HEIGHT);
+        data.set_min_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
     }
     fn on_paint(&self) {
         if self.splash_screen.visible() {
             self.splash_screen.resize(self.window.size());
+        } else {
+            self.webview.fit_to_window(self.window.handle.hwnd());
         }
     }
     fn on_toggle_fullscreen_notice(&self) {
@@ -237,7 +324,6 @@ impl MainWindow {
                 self.tray
                     .tray_topmost
                     .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
-                drop(saved_style);
                 self.transmit_window_full_screen_change(true);
             }
         }
@@ -275,6 +361,7 @@ impl MainWindow {
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_full_screen_change(false);
-        nwg::stop_thread_dispatch();
+        // Terminates the app regardless if the user is set exit on window closed or not
+        // nwg::stop_thread_dispatch();
     }
 }
