@@ -35,7 +35,9 @@ jobs:
     - name: Upload to Amazon S3
       run: |
         aws s3 cp --acl public-read ".\StremioSetup-v$((get-item .\StremioSetup*.exe).VersionInfo.ProductVersion.Trim()).exe" s3://stremio-artifacts/stremio-shell-ng/${{ github.ref_name }}/
-
+    - name: Generate RC descriptor
+      run: |
+        node ./generate_descriptor.js --wait-all --tag=${{ github.ref_name }}
     - uses: actions/upload-artifact@v3
       with:
         name: stremio-setup
