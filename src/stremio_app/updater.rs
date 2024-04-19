@@ -84,20 +84,21 @@ impl Updater {
         }
         println!("Found update v{}", version);
 
-        // Download the new setup file
-        let mut installer_response = reqwest::blocking::get(installer.url.clone())?;
-        let size = installer_response.content_length();
-        let mut downloaded: u64 = 0;
-        let mut sha256 = Sha256::new();
-        let temp_dir = std::env::temp_dir();
         let file_name = std::path::Path::new(installer.url.path())
             .file_name()
             .context("Invalid file name")?
             .to_str()
             .context("The path is not valid UTF-8")?
             .to_string();
-
+        let temp_dir = std::env::temp_dir();
         let dest = temp_dir.join(file_name);
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Download the new setup file
+        let mut installer_response = reqwest::blocking::get(installer.url.clone())?;
+        let size = installer_response.content_length();
+        let mut downloaded: u64 = 0;
+        let mut sha256 = Sha256::new();
 
         println!("Downloading {} to {}", installer.url, dest.display());
 
