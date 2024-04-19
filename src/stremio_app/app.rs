@@ -47,7 +47,7 @@ pub struct MainWindow {
     #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change], OnWindowMaximize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
-    #[nwg_events((tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
+    #[nwg_events((tray, MousePressLeftUp): [Self::on_show_hide], (tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
     pub tray: SystemTray,
     #[nwg_partial(parent: window)]
     pub webview: WebView,

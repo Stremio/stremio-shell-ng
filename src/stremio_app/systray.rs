@@ -8,7 +8,7 @@ pub struct SystemTray {
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub tray_icon: nwg::Icon,
     #[nwg_control(icon: Some(&data.tray_icon), tip: Some("Stremio"))]
-    #[nwg_events(MousePressLeftUp: [Self::show_menu], OnContextMenu: [Self::show_menu])]
+    #[nwg_events(OnContextMenu: [Self::show_menu])]
     pub tray: nwg::TrayNotification,
     #[nwg_control(popup: true)]
     pub tray_menu: nwg::Menu,
