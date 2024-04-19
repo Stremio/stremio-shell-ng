@@ -12,7 +12,7 @@ use std::thread;
 use urlencoding::decode;
 use webview2::Controller;
 use winapi::shared::windef::HWND;
-use winapi::um::winuser::{GetClientRect, WM_SETFOCUS};
+use winapi::um::winuser::{GetClientRect, VK_F7, WM_SETFOCUS};
 
 #[derive(Default)]
 pub struct WebView {
@@ -129,6 +129,16 @@ impl PartialUi for WebView {
                         controller
                             .move_focus(webview2::MoveFocusReason::Programmatic)
                             .ok();
+                        controller.add_accelerator_key_pressed(move |_, e| {
+                            // Block F7, Ctrl+F, and Ctrl+G
+                            let k = e.get_virtual_key()?;
+                            if k == VK_F7 as u32  || k == 70 & 0x7F || k == 71 & 0x7F {
+                                e.put_handled(true)
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .unwrap();
 
                         controller_clone
                             .set(controller)
