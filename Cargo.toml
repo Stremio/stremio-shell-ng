@@ -15,6 +15,7 @@ native-windows-derive = "1"
 winapi = { version = "0.3.9", features = [
     "libloaderapi",
     "handleapi",
+    "jobapi2",
     "wincon",
     "winuser",
     "namedpipeapi"
@@ -29,7 +30,6 @@ clap = { version = "4", features = ["derive", "unicode"] }
 open = "5"
 urlencoding = "2"
 bitflags = "2"
-win32job = "2"
 parse-display = "0.9"
 flume = "0.11"
 whoami = "1.5"

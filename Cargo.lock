@@ -1381,7 +1381,6 @@ dependencies = [
  "webview2",
  "webview2-sys",
  "whoami",
- "win32job",
  "winapi",
  "winres",
 ]
@@ -1484,26 +1483,6 @@ dependencies = [
  "fastrand",
  "rustix",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "thiserror"
-version = "1.0.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e45bcbe8ed29775f228095caf2cd67af7a4ccf756ebff23a306bf3e8b47b24b"
-dependencies = [
- "thiserror-impl",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a953cb265bef375dae3de6663da4d3804eee9682ea80d8e2542529b73c531c81"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.52",
 ]
 
 [[package]]
@@ -1859,16 +1838,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17882f045410753661207383517a6f62ec3dbeb6a4ed2acce01f0728238d1983"
 
 [[package]]
-name = "win32job"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b2b1bf557d947847a30eb73f79aa6cdb3eaf3ce02f5e9599438f77896a62b3c"
-dependencies = [
- "thiserror",
- "windows",
-]
-
-[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1895,16 +1864,6 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
-
-[[package]]
-name = "windows"
-version = "0.52.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e48a53791691ab099e5e2ad123536d0fff50652600abaf43bbf952894110d0be"
-dependencies = [
- "windows-core",
- "windows-targets 0.52.4",
-]
 
 [[package]]
 name = "windows-core"

@@ -5,6 +5,7 @@ use serde_json;
 use std::{
     cell::RefCell,
     io::Read,
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{self, Command},
     str,
@@ -12,7 +13,7 @@ use std::{
     thread, time,
 };
 use url::Url;
-use winapi::um::winuser::WS_EX_TOPMOST;
+use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
 
 use crate::stremio_app::{
     constants::{APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH},
@@ -273,6 +274,8 @@ impl MainWindow {
                                         "/FORCECLOSEAPPLICATIONS",
                                         "/TASKS=runapp",
                                     ])
+                                    .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+                                    .stdin(process::Stdio::null())
                                     .stdout(process::Stdio::null())
                                     .stderr(process::Stdio::null())
                                     .spawn();
