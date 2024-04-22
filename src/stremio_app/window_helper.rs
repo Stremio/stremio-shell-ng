@@ -43,6 +43,9 @@ impl WindowStyle {
         }
         state.bits() as u32
     }
+    pub fn is_window_minimized(&self, hwnd: HWND) -> bool {
+        0 != unsafe { IsIconic(hwnd) }
+    }
     pub fn show_window_at(&self, hwnd: HWND, pos: HWND) {
         unsafe {
             SetWindowPos(

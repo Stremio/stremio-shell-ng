@@ -47,7 +47,7 @@ pub struct MainWindow {
     #[nwg_events( OnWindowClose: [Self::on_quit(SELF, EVT_DATA)], OnInit: [Self::on_init], OnPaint: [Self::on_paint], OnMinMaxInfo: [Self::on_min_max(SELF, EVT_DATA)], OnWindowMinimize: [Self::transmit_window_state_change], OnWindowMaximize: [Self::transmit_window_state_change] )]
     pub window: nwg::Window,
     #[nwg_partial(parent: window)]
-    #[nwg_events((tray, MousePressLeftUp): [Self::on_show_hide], (tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
+    #[nwg_events((tray, MousePressLeftUp): [Self::on_show], (tray_exit, OnMenuItemSelected): [nwg::stop_thread_dispatch()], (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide], (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost]) ]
     pub tray: SystemTray,
     #[nwg_partial(parent: window)]
     pub webview: WebView,
@@ -344,10 +344,28 @@ impl MainWindow {
             }
         }
     }
-    fn on_show_hide(&self) {
-        self.window.set_visible(!self.window.visible());
+    fn on_show(&self) {
+        self.window.set_visible(true);
+        if let (Some(hwnd), Ok(mut saved_style)) = (
+            self.window.handle.hwnd(),
+            self.saved_window_style.try_borrow_mut(),
+        ) {
+            if saved_style.is_window_minimized(hwnd) {
+                self.window.restore();
+            }
+            saved_style.set_active(hwnd);
+        }
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_state_change();
+    }
+    fn on_show_hide(&self) {
+        if self.window.visible() {
+            self.window.set_visible(false);
+            self.tray.tray_show_hide.set_checked(self.window.visible());
+            self.transmit_window_state_change();
+        } else {
+            self.on_show();
+        }
     }
     fn on_quit(&self, data: &nwg::EventData) {
         if let nwg::EventData::OnWindowClose(data) = data {
@@ -356,7 +374,5 @@ impl MainWindow {
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_full_screen_change(false, false);
-        // Terminates the app regardless if the user is set exit on window closed or not
-        // nwg::stop_thread_dispatch();
     }
 }
