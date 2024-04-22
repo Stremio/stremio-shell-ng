@@ -4,15 +4,13 @@ use std::{
 };
 use winapi::um::{
     processthreadsapi::GetCurrentProcess,
-    winbase::CreateJobObjectA,
+    winbase::{CreateJobObjectA, CREATE_NO_WINDOW},
     winnt::{
         JobObjectExtendedLimitInformation, JOBOBJECT_BASIC_LIMIT_INFORMATION,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
         JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     },
 };
-
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct StremioServer {}
 
