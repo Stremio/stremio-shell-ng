@@ -1,8 +1,7 @@
 use native_windows_gui as nwg;
-use std::os::windows::process::CommandExt;
-use std::process::Command;
-use std::thread;
-use std::time::Duration;
+use std::{
+    env, fs, os::windows::process::CommandExt, path, process::Command, thread, time::Duration,
+};
 use winapi::um::{
     processthreadsapi::GetCurrentProcess,
     winbase::CreateJobObjectA,
@@ -44,9 +43,15 @@ impl StremioServer {
                     GetCurrentProcess(),
                 );
             }
+            let mut path = env::current_exe()
+                .and_then(fs::canonicalize)
+                .expect("Cannot get the current executable path");
+            path.pop();
             loop {
-                let child = Command::new("./stremio-runtime")
-                    .arg("server.js")
+                let runtime_path = path.clone().join(path::Path::new("stremio-runtime"));
+                let server_path = path.clone().join(path::Path::new("server.js"));
+                let child = Command::new(runtime_path)
+                    .arg(server_path)
                     .creation_flags(CREATE_NO_WINDOW)
                     .spawn();
                 match child {
