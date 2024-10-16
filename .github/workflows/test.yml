@@ -13,10 +13,10 @@ jobs:
     - name: checkout
       uses: actions/checkout@v3
     - name: Stable with rustfmt and clippy
-      uses: actions-rs/toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        profile: minimal
         toolchain: stable
+        target: i686-pc-windows-msvc
         components: rustfmt, clippy
     - name: Lint code format
       run: cargo fmt --all -- --check
