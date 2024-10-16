@@ -1,7 +1,7 @@
 use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
-use libmpv2::{events::EventContext, events::Event, Format, Mpv, SetData};
+use libmpv2::{events::Event, events::EventContext, Format, Mpv, SetData};
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
     sync::Arc,
