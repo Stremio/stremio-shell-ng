@@ -1,5 +1,5 @@
 use core::convert::TryFrom;
-use libmpv::{events::PropertyData, mpv_end_file_reason, EndFileReason};
+use libmpv2::{events::PropertyData, mpv_end_file_reason, EndFileReason};
 use parse_display::{Display, FromStr};
 use serde::{Deserialize, Serialize};
 use std::fmt;

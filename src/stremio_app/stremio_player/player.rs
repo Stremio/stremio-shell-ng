@@ -1,7 +1,7 @@
 use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
-use libmpv::{events::Event, Format, Mpv, SetData};
+use libmpv2::{events::EventContext, events::Event, Format, Mpv, SetData};
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
     sync::Arc,
@@ -93,7 +93,7 @@ fn create_event_thread(
     rpc_response_sender: Sender<String>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut event_context = mpv.create_event_context();
+        let mut event_context = EventContext::new(mpv.ctx);
         event_context
             .disable_deprecated_events()
             .expect("failed to disable deprecated MPV events");
@@ -181,7 +181,7 @@ fn create_message_thread(
             let in_msg: InMsg = match serde_json::from_str(&msg) {
                 Ok(in_msg) => in_msg,
                 Err(error) => {
-                    eprintln!("cannot parse InMsg: {error:#}");
+                    eprintln!("cannot parse InMsg:{:?} {error:#}", &msg);
                     continue;
                 }
             };
@@ -226,6 +226,6 @@ trait MpvExt {
 impl MpvExt for Mpv {
     // @TODO create a PR to the `libmpv` crate and then remove `libmpv-sys` from Cargo.toml?
     fn wake_up(&self) {
-        unsafe { libmpv_sys::mpv_wakeup(self.ctx.as_ptr()) }
+        unsafe { libmpv2_sys::mpv_wakeup(self.ctx.as_ptr()) }
     }
 }

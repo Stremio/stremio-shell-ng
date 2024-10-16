@@ -2,7 +2,7 @@ use crate::stremio_app::stremio_player::communication::{
     BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, MpvCmd, PlayerEnded, PlayerProprChange, PropKey,
     PropVal,
 };
-use libmpv::{events::PropertyData, mpv_end_file_reason};
+use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
 use serde_test::{assert_tokens, Token};
 
