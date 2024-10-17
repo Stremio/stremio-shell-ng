@@ -3,7 +3,7 @@
 
 #define MyAppName "Stremio"
 #define MyAppExeName "stremio-shell-ng.exe"
-#define MyAppExeLocation SourcePath + "..\target\release\" + MyAppExeName
+#define MyAppExeLocation SourcePath + "..\target\i686-pc-windows-msvc\release\" + MyAppExeName
 #define MyAppVersion() GetVersionComponents(MyAppExeLocation, Local[0], Local[1], Local[2], Local[3]), \
   Str(Local[0]) + "." + Str(Local[1]) + "." + Str(Local[2])
 
