@@ -15,13 +15,13 @@ jobs:
       run: git config --global core.autocrlf false
     - name: checkout
       uses: actions/checkout@v3
-    - name: Rust Stable
-      uses: actions-rs/toolchain@v1
+    - name: Rust stable
+      uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
-        profile: minimal
         toolchain: stable
+        target: i686-pc-windows-msvc
     - name: Build main application
-      run: cargo build --release
+      run: cargo build --release --target i686-pc-windows-msvc
     - name: Build the setup proggam
       run: |
         & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' /DSIGN '/Sstremiosign=$qC:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x86\signtool.exe$q sign /f $q${{ github.workspace }}\certificates\smartcode-20211118-20241118.pfx$q /p ${{ secrets.WIN_CERT_PASSWORD }} /v $f' '${{ github.workspace }}\setup\Stremio.iss'
