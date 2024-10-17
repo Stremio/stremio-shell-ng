@@ -12,10 +12,6 @@ jobs:
       run: git config --global core.autocrlf false
     - name: checkout
       uses: actions/checkout@v3
-    - name: Set up Visual Studio shell
-      uses: egor-tensin/vs-shell@v2
-      with:
-        arch: Win32
     - name: Stable with rustfmt and clippy
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
@@ -27,5 +23,5 @@ jobs:
     - name: Lint code
       run: cargo clippy --all -- -D warnings
     - name: Test
-      run: cargo test
+      run: cargo test --target i686-pc-windows-msvc
 
