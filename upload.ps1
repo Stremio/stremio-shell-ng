@@ -1,4 +1,4 @@
-$tag = $(git describe --tags --abbrev=0)
+$tag = $(git describe --abbrev=0)
 
 foreach ($installer in (get-item .\StremioSetup*.exe)) {
     if ($tag.StartsWith("v$($installer.VersionInfo.ProductVersion.Trim())")) {

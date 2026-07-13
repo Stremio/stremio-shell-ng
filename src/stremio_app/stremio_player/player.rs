@@ -176,6 +176,21 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         set_property!("msg-level", "all=no");
         set_property!("quiet", "yes");
         set_property!("hwdec", "auto");
+        // Real-Debrid's proxy intermittently returns a transient HTTP 503
+        // (header "X-Error: read_pxy_timeout"), most often on seeks. ffmpeg's
+        // http protocol (used by mpv) has reconnection disabled by default,
+        // so it treats the 503 as a terminal error, reports EOF, and the web
+        // UI reads that as "video ended", incorrectly auto-advancing to the
+        // next episode or killing the stream. These mirror ffmpeg's own
+        // reconnect_* flags, enabling retry instead of aborting on transient
+        // HTTP failures. Note: stream-lavf-o splits sub-options on ",", so
+        // the literal "4xx,5xx" must use mpv's %N%string length-prefixed
+        // escape (%7% = length of "4xx,5xx") or the comma silently breaks
+        // the option and 5xx errors are dropped from the whitelist.
+        set_property!(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_streamed=1,reconnect_on_http_error=%7%4xx,5xx,reconnect_delay_max=10"
+        );
         // gpu-next: libplacebo VO with modern HDR tone-mapping; gpu, is the fallback.
         set_property!("vo", "gpu-next,gpu,");
         for (name, value) in [

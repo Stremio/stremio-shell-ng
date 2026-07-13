@@ -12,6 +12,7 @@ use std::{
     thread,
 };
 use winapi::um::{
+    handleapi::CloseHandle,
     processthreadsapi::GetCurrentProcess,
     winbase::{CreateJobObjectA, CREATE_NO_WINDOW},
     winnt::{
@@ -48,25 +49,55 @@ impl StremioServer {
             // With the JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK and JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE flags
             unsafe {
                 let job_main_process = CreateJobObjectA(std::ptr::null_mut(), std::ptr::null_mut());
-                let jeli = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                    BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                        LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                            | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
-                            | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                if job_main_process.is_null() {
+                    eprintln!(
+                        "CreateJobObjectA failed: {}",
+                        std::io::Error::last_os_error()
+                    );
+                } else {
+                    let jeli = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                        BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                            LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                                | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
+                                | JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                            ..std::mem::zeroed()
+                        },
                         ..std::mem::zeroed()
-                    },
-                    ..std::mem::zeroed()
-                };
-                winapi::um::jobapi2::SetInformationJobObject(
-                    job_main_process,
-                    JobObjectExtendedLimitInformation,
-                    &jeli as *const _ as *mut _,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                winapi::um::jobapi2::AssignProcessToJobObject(
-                    job_main_process,
-                    GetCurrentProcess(),
-                );
+                    };
+                    if winapi::um::jobapi2::SetInformationJobObject(
+                        job_main_process,
+                        JobObjectExtendedLimitInformation,
+                        &jeli as *const _ as *mut _,
+                        std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                    ) == 0
+                    {
+                        eprintln!(
+                            "SetInformationJobObject failed: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                    if winapi::um::jobapi2::AssignProcessToJobObject(
+                        job_main_process,
+                        GetCurrentProcess(),
+                    ) == 0
+                    {
+                        eprintln!(
+                            "AssignProcessToJobObject failed (parent likely already in a \
+                             non-breakaway job): {}",
+                            std::io::Error::last_os_error()
+                        );
+                        // Assignment failed, so this handle isn't backing a live
+                        // kill-on-close relationship with our process — close it
+                        // immediately instead of leaking it.
+                        CloseHandle(job_main_process);
+                    }
+                    // On success the handle intentionally stays open for the lifetime of
+                    // this process: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE fires when the last
+                    // handle to the job closes, and closing it here (right after our own
+                    // process was assigned to it) triggers that immediately. `start()` is
+                    // only called once at launch and again on the rare crash-restart path,
+                    // so this intentional per-call handle is bounded, not an unbounded leak.
+                }
             }
             let mut path = env::current_exe()
                 .and_then(fs::canonicalize)
@@ -87,7 +118,12 @@ impl StremioServer {
                     let out_lines = lines.clone();
                     let tx = tx.clone();
                     let out_thread = thread::spawn(move || {
-                        let http_endpoint = String::new();
+                        let mut endpoint_sent = false;
+                        // Accumulates output across reads so the readiness line is still
+                        // found if "EngineFS server started at ..." straddles a read
+                        // boundary; without this, a chunk split mid-line means neither
+                        // read contains the full line and readiness is silently missed.
+                        let mut pending = String::new();
                         loop {
                             let mut buffer = [0; SRV_BUFFER_SIZE];
                             let on = match stdout.read(&mut buffer[..]) {
@@ -103,16 +139,22 @@ impl StremioServer {
                             {
                                 let lines = &mut *out_lines.lock().unwrap();
                                 *lines += string_data.deref();
-                                if http_endpoint.is_empty() {
-                                    if let Some(http_endpoint) = string_data
-                                        .lines()
-                                        .find(|line| line.starts_with("EngineFS server started at"))
-                                    {
-                                        let http_endpoint =
-                                            http_endpoint.split_whitespace().last().unwrap();
-                                        println!("HTTP endpoint: {http_endpoint}");
-                                        let endpoint = http_endpoint.to_string();
-                                        tx.send(endpoint.clone()).ok();
+                                if !endpoint_sent {
+                                    pending += string_data.deref();
+                                    if let Some(line_end) = pending.rfind('\n') {
+                                        let (complete, rest) = pending.split_at(line_end + 1);
+                                        if let Some(http_endpoint) = complete
+                                            .lines()
+                                            .find(|line| {
+                                                line.starts_with("EngineFS server started at")
+                                            })
+                                            .and_then(|line| line.split_whitespace().last())
+                                        {
+                                            println!("HTTP endpoint: {http_endpoint}");
+                                            tx.send(http_endpoint.to_string()).ok();
+                                            endpoint_sent = true;
+                                        }
+                                        pending = rest.to_string();
                                     }
                                 }
                                 *lines = lines
