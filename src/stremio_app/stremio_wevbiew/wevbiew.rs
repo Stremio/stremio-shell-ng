@@ -13,9 +13,12 @@ use std::thread;
 use std::time::Instant;
 use url::Url;
 use urlencoding::decode;
-use webview2::Controller;
+use webview2::{check_hresult, Controller};
+use webview2_sys::ICoreWebView2Settings3;
 use winapi::shared::windef::HWND;
-use winapi::um::winuser::{GetClientRect, VK_F7, VK_LEFT, VK_RIGHT, WM_APPCOMMAND, WM_SETFOCUS};
+use winapi::um::winuser::{
+    GetClientRect, GetKeyState, VK_CONTROL, VK_F7, VK_LEFT, VK_RIGHT, WM_APPCOMMAND, WM_SETFOCUS,
+};
 
 const SEEK_KEY_REPEAT_INTERVAL_MS: u128 = 150;
 const APPCOMMAND_MEDIA_NEXTTRACK: u32 = 11;
@@ -23,6 +26,7 @@ const APPCOMMAND_MEDIA_PREVIOUSTRACK: u32 = 12;
 const APPCOMMAND_MEDIA_PLAY_PAUSE: u32 = 14;
 const APPCOMMAND_MEDIA_PLAY: u32 = 46;
 const APPCOMMAND_MEDIA_PAUSE: u32 = 47;
+const VK_F: u32 = b'F' as u32;
 
 use super::constants::{WARNING_URL, WHITELISTED_HOSTS};
 
@@ -113,6 +117,15 @@ impl PartialUi for WebView {
                     settings.put_is_built_in_error_page_enabled(false).ok();
                     settings.put_are_host_objects_allowed(false).ok();
                     settings.put_are_default_script_dialogs_enabled(false).ok();
+                    if let Some(settings3) = settings
+                        .as_inner()
+                        .get_interface::<dyn ICoreWebView2Settings3>()
+                    {
+                        check_hresult(unsafe {
+                            settings3.put_are_browser_accelerator_keys_enabled(0)
+                        })
+                        .ok();
+                    }
 
                     // Handle window.open and href
                     webview.add_new_window_requested(move |_webview, event| {
@@ -198,9 +211,10 @@ impl PartialUi for WebView {
                         let last_seek_repeat: RefCell<HashMap<u32, Instant>> =
                             RefCell::new(HashMap::new());
                         controller.add_accelerator_key_pressed(move |_, e| {
-                            // Block F7, Ctrl+F, and Ctrl+G
                             let k = e.get_virtual_key()?;
-                            if k == VK_F7 as u32  || k == 70 & 0x7F || k == 71 & 0x7F {
+                            let ctrl_pressed =
+                                unsafe { (GetKeyState(VK_CONTROL) as u16 & 0x8000) != 0 };
+                            if k == VK_F7 as u32 || (k == VK_F && ctrl_pressed) {
                                 return e.put_handled(true);
                             }
 
