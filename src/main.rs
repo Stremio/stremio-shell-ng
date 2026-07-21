@@ -26,7 +26,10 @@ struct Opt {
     start_hidden: bool,
     #[clap(long, help = "Do not show the splash image")]
     no_splash: bool,
-    #[clap(long, help = "Enable dev tools when pressing F12")]
+    #[clap(
+        long,
+        help = "Deprecated: dev tools are always available from the context menu"
+    )]
     dev_tools: bool,
     #[clap(long, help = "Disable the server and load the WebUI from localhost")]
     development: bool,

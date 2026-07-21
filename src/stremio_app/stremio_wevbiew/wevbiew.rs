@@ -83,7 +83,6 @@ impl PartialUi for WebView {
             .ok();
         let controller_clone = data.controller.clone();
         let endpoint = data.endpoint.clone();
-        let dev_tools = data.dev_tools.clone();
         let webview_flags = "--autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments(webview_flags)
@@ -108,7 +107,8 @@ impl PartialUi for WebView {
                             .expect("Cannot obtain webview from controller");
                     let settings = webview.get_settings().unwrap();
                     settings.put_is_status_bar_enabled(false).ok();
-                    settings.put_are_dev_tools_enabled(*dev_tools.get().unwrap()).ok();
+                    settings.put_are_dev_tools_enabled(true).ok();
+                    settings.put_are_default_context_menus_enabled(true).ok();
                     settings.put_is_zoom_control_enabled(false).ok();
                     settings.put_is_built_in_error_page_enabled(false).ok();
                     settings.put_are_host_objects_allowed(false).ok();
@@ -170,16 +170,7 @@ impl PartialUi for WebView {
                             ).expect("Cannot add SERVER_IPC_KEY to webview");
 
                             wv.execute_script(r##"
-                            try{
-                                /* Disable context menus */
-                                document.addEventListener('contextmenu', (e) => {
-                                    if(!(e.target.tagName == "INPUT" &&
-                                    ['text', 'password', 'number', 'week', 'month', 'email'].includes(e.target.type.toLowerCase()))) {
-                                        e.stopPropagation();e.preventDefault()
-                                    }
-                                    })
-                            }catch(e){}
-
+                            window.addEventListener('contextmenu', event => event.stopImmediatePropagation(), true);
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
