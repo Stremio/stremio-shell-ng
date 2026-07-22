@@ -82,17 +82,31 @@ impl PlayerEnded {
 pub struct PlayerError {
     pub error: String,
 }
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerVideoReady {
+    pub load_id: u64,
+    pub ready: bool,
+}
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum PlayerEvent {
     PropChange(PlayerProprChange),
     End(PlayerEnded),
     Error(PlayerError),
+    VideoReady(PlayerVideoReady),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PlayerResponse<'a>(pub &'a str, pub PlayerEvent);
 impl PlayerResponse<'_> {
+    pub fn video_ready(load_id: u64, ready: bool) -> PlayerResponse<'static> {
+        PlayerResponse(
+            "mpv-event-video-ready",
+            PlayerEvent::VideoReady(PlayerVideoReady { load_id, ready }),
+        )
+    }
+
     pub fn to_value(&self) -> Option<serde_json::Value> {
         serde_json::to_value(self).ok()
     }
