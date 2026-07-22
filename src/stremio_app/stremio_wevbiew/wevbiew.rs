@@ -183,7 +183,14 @@ impl PartialUi for WebView {
                             ).expect("Cannot add SERVER_IPC_KEY to webview");
 
                             wv.execute_script(r##"
-                            window.addEventListener('contextmenu', event => event.stopImmediatePropagation(), true);
+                            window.addEventListener('contextmenu', event => {
+                                if (event.shiftKey) event.stopImmediatePropagation();
+                            }, true);
+                            window.addEventListener('mouseup', event => {
+                                if (event.shiftKey && event.button === 2) {
+                                    event.stopImmediatePropagation();
+                                }
+                            }, true);
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
