@@ -1,10 +1,21 @@
 use crate::stremio_app::stremio_player::communication::{
-    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, MpvCmd, PlayerEnded, PlayerProprChange, PropKey,
-    PropVal,
+    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, MpvCmd, PlayerEnded, PlayerProprChange,
+    PlayerResponse, PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
 use serde_test::{assert_tokens, Token};
+
+#[test]
+fn video_ready_response() {
+    assert_eq!(
+        PlayerResponse::video_ready(7, true).to_value(),
+        Some(serde_json::json!([
+            "mpv-event-video-ready",
+            { "loadId": 7, "ready": true }
+        ]))
+    );
+}
 
 #[test]
 fn propr_change_tokens() {
