@@ -4,10 +4,11 @@ use flume::{Receiver, Sender};
 use libmpv2::{events::Event, Format, Mpv, SetData};
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
+    collections::VecDeque,
     mem, ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -37,6 +38,61 @@ use crate::stremio_app::stremio_player::{
 struct ObserveProperty {
     name: String,
     format: Format,
+}
+
+#[derive(Debug, Default)]
+struct VideoReadyState {
+    next_load_id: u64,
+    current_load_id: Option<u64>,
+    pending_load_ids: VecDeque<u64>,
+    active_load_id: Option<u64>,
+    file_loaded_id: Option<u64>,
+    ready_sent_id: Option<u64>,
+}
+
+impl VideoReadyState {
+    fn begin_transition(&mut self, loads_file: bool) -> u64 {
+        self.next_load_id += 1;
+        self.current_load_id = Some(self.next_load_id);
+        self.file_loaded_id = None;
+        self.ready_sent_id = None;
+        if loads_file {
+            self.pending_load_ids.push_back(self.next_load_id);
+        }
+        self.next_load_id
+    }
+
+    fn start_file(&mut self) {
+        self.active_load_id = self.pending_load_ids.pop_front();
+        self.file_loaded_id = None;
+    }
+
+    fn file_loaded(&mut self) {
+        if self.active_load_id == self.current_load_id {
+            self.file_loaded_id = self.active_load_id;
+        }
+    }
+
+    fn playback_restarted(&mut self) -> Option<u64> {
+        let load_id = self.current_load_id?;
+        if self.file_loaded_id != Some(load_id) || self.ready_sent_id == Some(load_id) {
+            return None;
+        }
+        self.ready_sent_id = Some(load_id);
+        Some(load_id)
+    }
+}
+
+type SharedVideoReadyState = Arc<Mutex<VideoReadyState>>;
+
+fn video_ready_response(load_id: u64, ready: bool) -> String {
+    RPCResponse::response_message(PlayerResponse::video_ready(load_id, ready).to_value())
+}
+
+fn send_video_ready(rpc_response_sender: &Sender<String>, load_id: u64, ready: bool) {
+    if let Err(error) = rpc_response_sender.send(video_ready_response(load_id, ready)) {
+        eprintln!("failed to send video readiness: {error}");
+    }
 }
 
 #[link(name = "user32")]
@@ -127,6 +183,7 @@ impl PartialUi for Player {
         let (rpc_response_sender, rpc_response_receiver) = flume::unbounded();
         let (observe_property_sender, observe_property_receiver) = flume::unbounded();
         data.channel = ipc::Channel::new(Some((in_msg_sender, rpc_response_receiver)));
+        let video_ready_state = Arc::new(Mutex::new(VideoReadyState::default()));
 
         let mpv = Arc::new(create_mpv(window_handle));
         let mpv_event_client = mpv
@@ -136,7 +193,8 @@ impl PartialUi for Player {
         let _event_thread = create_event_thread(
             mpv_event_client,
             observe_property_receiver,
-            rpc_response_sender,
+            rpc_response_sender.clone(),
+            Arc::clone(&video_ready_state),
         );
         let gpu_video_processing = Arc::new(AtomicBool::new(false));
         let _display_thread = create_display_output_thread(
@@ -150,6 +208,8 @@ impl PartialUi for Player {
             gpu_video_processing,
             observe_property_sender,
             in_msg_receiver,
+            rpc_response_sender,
+            video_ready_state,
         );
         // @TODO implement a mechanism to stop threads on `Player` drop if needed
 
@@ -419,6 +479,7 @@ fn create_event_thread(
     mpv_event_client: Mpv,
     observe_property_receiver: Receiver<ObserveProperty>,
     rpc_response_sender: Sender<String>,
+    video_ready_state: SharedVideoReadyState,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         mpv_event_client
@@ -443,6 +504,33 @@ fn create_event_thread(
                 // dummy event received (may be created on a wake up call or on timeout)
                 None => continue,
             };
+
+            if matches!(&event, Event::StartFile) {
+                video_ready_state
+                    .lock()
+                    .expect("cannot lock video readiness state")
+                    .start_file();
+                continue;
+            }
+
+            if matches!(&event, Event::FileLoaded) {
+                video_ready_state
+                    .lock()
+                    .expect("cannot lock video readiness state")
+                    .file_loaded();
+                continue;
+            }
+
+            if matches!(&event, Event::PlaybackRestart) {
+                let load_id = video_ready_state
+                    .lock()
+                    .expect("cannot lock video readiness state")
+                    .playback_restarted();
+                if let Some(load_id) = load_id {
+                    send_video_ready(&rpc_response_sender, load_id, true);
+                }
+                continue;
+            }
 
             // even if you don't do anything with the events, it is still necessary to empty the event loop
             let player_response = match event {
@@ -479,6 +567,8 @@ fn create_message_thread(
     gpu_video_processing: Arc<AtomicBool>,
     observe_property_sender: Sender<ObserveProperty>,
     in_msg_receiver: Receiver<String>,
+    rpc_response_sender: Sender<String>,
+    video_ready_state: SharedVideoReadyState,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         // -- Helpers --
@@ -492,6 +582,13 @@ fn create_message_thread(
         let send_command = |cmd: CmdVal| {
             let parts: Vec<String> = cmd.into();
             if let Some((name, args)) = parts.split_first() {
+                if name == "loadfile" || name == "stop" {
+                    let load_id = video_ready_state
+                        .lock()
+                        .expect("cannot lock video readiness state")
+                        .begin_transition(name == "loadfile");
+                    send_video_ready(&rpc_response_sender, load_id, false);
+                }
                 let args = args.iter().map(String::as_str).collect::<Vec<_>>();
                 if let Err(error) = mpv.command(name, &args) {
                     eprintln!("failed to execute MPV command: '{error:#}'")
@@ -569,4 +666,43 @@ fn create_message_thread(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VideoReadyState;
+
+    #[test]
+    fn ready_follows_file_loaded_restart_once() {
+        let mut state = VideoReadyState::default();
+        let load_id = state.begin_transition(true);
+        state.start_file();
+        assert_eq!(state.playback_restarted(), None);
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), Some(load_id));
+        assert_eq!(state.playback_restarted(), None);
+    }
+
+    #[test]
+    fn new_transition_ignores_previous_file_events() {
+        let mut state = VideoReadyState::default();
+        state.begin_transition(true);
+        state.start_file();
+
+        let current_load = state.begin_transition(true);
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), None);
+
+        state.start_file();
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), Some(current_load));
+    }
+
+    #[test]
+    fn stop_never_becomes_ready() {
+        let mut state = VideoReadyState::default();
+        state.begin_transition(false);
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), None);
+    }
 }
