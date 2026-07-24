@@ -476,7 +476,7 @@ fn display_hdr_active(path: &DISPLAYCONFIG_PATH_INFO) -> Option<bool> {
 }
 
 fn create_event_thread(
-    mut mpv_event_client: Mpv,
+    mpv_event_client: Mpv,
     observe_property_receiver: Receiver<ObserveProperty>,
     rpc_response_sender: Sender<String>,
     video_ready_state: SharedVideoReadyState,
