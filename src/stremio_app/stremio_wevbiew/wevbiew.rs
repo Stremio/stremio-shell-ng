@@ -1,4 +1,4 @@
-use crate::stremio_app::constants::SERVER_IPC_KEY;
+use crate::stremio_app::constants::{safe_url, SERVER_IPC_KEY};
 use crate::stremio_app::ipc;
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
@@ -11,7 +11,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use url::Url;
 use urlencoding::decode;
 use webview2::{check_hresult, Controller};
 use webview2_sys::ICoreWebView2Settings3;
@@ -27,8 +26,6 @@ const APPCOMMAND_MEDIA_PLAY_PAUSE: u32 = 14;
 const APPCOMMAND_MEDIA_PLAY: u32 = 46;
 const APPCOMMAND_MEDIA_PAUSE: u32 = 47;
 const VK_F: u32 = b'F' as u32;
-
-use super::constants::{WARNING_URL, WHITELISTED_HOSTS};
 
 #[derive(Default)]
 pub struct WebView {
@@ -130,17 +127,7 @@ impl PartialUi for WebView {
                     // Handle window.open and href
                     webview.add_new_window_requested(move |_webview, event| {
                         if let Ok(uri) = event.get_uri() {
-                            if let Ok(url) = Url::parse(&uri) {
-                                let is_whitelisted = url.host().is_some_and(|host| {
-                                    WHITELISTED_HOSTS.iter().any(|whitelisted_host| host.to_string().ends_with(whitelisted_host))
-                                });
-
-                                let final_url = if is_whitelisted {
-                                    url.to_string()
-                                } else {
-                                    format!("{}{}", WARNING_URL, urlencoding::encode(url.as_ref()))
-                                };
-
+                            if let Some(final_url) = safe_url(&uri) {
                                 if let Err(e) = open::that(final_url) {
                                     eprintln!("Failed to open URL: {e}");
                                 }
@@ -196,7 +183,7 @@ impl PartialUi for WebView {
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
                                 }}catch(e){}
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
-                            
+
                             "##, |_| Ok(())).expect("Cannot add script to webview");
                             Ok(())
                         }).expect("Cannot add content loading");
