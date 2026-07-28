@@ -3,7 +3,7 @@ use native_windows_gui as nwg;
 use rand::Rng;
 use serde_json;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     io::Read,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
@@ -13,6 +13,7 @@ use std::{
     thread, time,
 };
 use url::Url;
+use winapi::shared::windef::HWND;
 use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
 
 use crate::stremio_app::{
@@ -21,13 +22,15 @@ use crate::stremio_app::{
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{RPCRequest, RPCResponse},
+    mpv_hwnd::find_mpv_child_hwnd,
+    pip_window::PipWindow,
     splash::SplashImage,
     stremio_player::Player,
     stremio_wevbiew::WebView,
     systray::SystemTray,
     updater,
     window_helper::WindowStyle,
-    window_settings::WindowSettings,
+    window_settings::{PipPlacement, WindowSettings},
     PipeServer,
 };
 
@@ -47,6 +50,10 @@ pub struct MainWindow {
     pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
+    pub requested_pip: Arc<Mutex<Option<bool>>>,
+    pub pip_window: RefCell<PipWindow>,
+    pub pip_active: Cell<bool>,
+    pub mpv_child_hwnd: Cell<Option<HWND>>,
     pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
@@ -70,6 +77,7 @@ pub struct MainWindow {
         (tray_exit, OnMenuItemSelected): [Self::on_exit],
         (tray_show_hide, OnMenuItemSelected): [Self::on_show_hide],
         (tray_topmost, OnMenuItemSelected): [Self::on_toggle_topmost],
+        (tray_pip, OnMenuItemSelected): [Self::on_tray_toggle_pip],
     )]
     pub tray: SystemTray,
     #[nwg_partial(parent: window)]
@@ -83,6 +91,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
     pub toggle_fullscreen_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_toggle_pip_notice] )]
+    pub toggle_pip_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [nwg::stop_thread_dispatch()] )]
     pub quit_notice: nwg::Notice,
@@ -160,6 +171,21 @@ impl MainWindow {
         self.tray.tray_show_hide.set_checked(!self.start_hidden);
         if self.no_splash {
             self.splash_screen.hide();
+        }
+
+        let pip_placement = PipPlacement::load();
+        if let Ok(mut pip) = self.pip_window.try_borrow_mut() {
+            if let Err(error) = pip.build(
+                self.toggle_pip_notice.sender(),
+                pip_placement
+                    .as_ref()
+                    .map(|placement| (placement.x, placement.y)),
+                pip_placement
+                    .as_ref()
+                    .map(|placement| (placement.width, placement.height)),
+            ) {
+                eprintln!("Failed to build PiP window: {error:?}");
+            }
         }
 
         let player_channel = self.player.channel.borrow();
@@ -265,6 +291,7 @@ impl MainWindow {
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
+        let toggle_pip_sender = self.toggle_pip_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
         let focus_sender = self.focus_notice.sender();
@@ -272,6 +299,7 @@ impl MainWindow {
 
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
+        let requested_pip = self.requested_pip.clone();
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -293,6 +321,14 @@ impl MainWindow {
                             *requested_fullscreen.lock().unwrap() = Some(fullscreen);
                             toggle_fullscreen_sender.notice();
                         }
+                    }
+                    Some("win-set-pip") => {
+                        let enabled = msg
+                            .get_params()
+                            .and_then(|params| params.get("enabled"))
+                            .and_then(|value| value.as_bool());
+                        *requested_pip.lock().unwrap() = enabled;
+                        toggle_pip_sender.notice();
                     }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
@@ -502,14 +538,24 @@ impl MainWindow {
         }
     }
     fn on_toggle_fullscreen_notice(&self) {
+        let currently_fullscreen = self
+            .saved_window_style
+            .try_borrow()
+            .map(|style| style.full_screen)
+            .unwrap_or(false);
+        let target = self
+            .requested_fullscreen
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(!currently_fullscreen);
+        if target && self.pip_active.get() {
+            *self.requested_pip.lock().unwrap() = Some(false);
+            self.on_toggle_pip_notice();
+        }
+
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
-                let target = self
-                    .requested_fullscreen
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .unwrap_or(!saved_style.full_screen);
                 saved_style.set_full_screen(hwnd, target);
                 self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
                 self.tray
@@ -518,6 +564,72 @@ impl MainWindow {
             }
         }
         self.transmit_window_visibility_change();
+    }
+    fn transmit_pip_change(&self, enabled: bool) {
+        if let Ok(web_channel) = self.webview.channel.try_borrow() {
+            if let Some((web_tx, _)) = web_channel.as_ref() {
+                web_tx.send(RPCResponse::pip_change(enabled)).ok();
+            }
+        }
+    }
+    fn on_tray_toggle_pip(&self) {
+        *self.requested_pip.lock().unwrap() = None;
+        self.toggle_pip_notice.sender().notice();
+    }
+    fn on_toggle_pip_notice(&self) {
+        let Some(main_hwnd) = self.window.handle.hwnd() else {
+            return;
+        };
+        let requested = self.requested_pip.lock().unwrap().take();
+        let target = requested.unwrap_or(!self.pip_active.get());
+
+        if target == self.pip_active.get() {
+            return;
+        }
+        if target
+            && self
+                .saved_window_style
+                .try_borrow()
+                .map(|style| style.full_screen)
+                .unwrap_or(false)
+        {
+            return;
+        }
+
+        let Ok(pip) = self.pip_window.try_borrow() else {
+            return;
+        };
+        if !pip.built.get() {
+            return;
+        }
+
+        if target {
+            let Some(child) = self
+                .mpv_child_hwnd
+                .get()
+                .or_else(|| find_mpv_child_hwnd(main_hwnd))
+            else {
+                eprintln!("PiP enable: MPV child window not found");
+                return;
+            };
+            if !pip.attach_video(child) {
+                eprintln!("PiP enable: failed to attach MPV child window");
+                return;
+            }
+            self.mpv_child_hwnd.set(Some(child));
+            pip.show();
+        } else {
+            if let Some(placement) = pip.current_placement() {
+                PipPlacement::save(placement).ok();
+            }
+            pip.detach_video(main_hwnd);
+            pip.hide();
+            self.webview.fit_to_window(Some(main_hwnd));
+        }
+
+        self.pip_active.set(target);
+        self.tray.tray_pip.set_checked(target);
+        self.transmit_pip_change(target);
     }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();
@@ -570,12 +682,30 @@ impl MainWindow {
             data.close(false);
         }
         self.save_window_settings();
+        self.cleanup_pip_for_exit();
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_visibility_change();
     }
     fn on_exit(&self) {
         self.save_window_settings();
+        self.cleanup_pip_for_exit();
         nwg::stop_thread_dispatch();
+    }
+    fn cleanup_pip_for_exit(&self) {
+        if !self.pip_active.get() {
+            return;
+        }
+        let Some(main_hwnd) = self.window.handle.hwnd() else {
+            return;
+        };
+        if let Ok(pip) = self.pip_window.try_borrow() {
+            if let Some(placement) = pip.current_placement() {
+                PipPlacement::save(placement).ok();
+            }
+            pip.detach_video(main_hwnd);
+            pip.hide();
+        }
+        self.pip_active.set(false);
     }
 }
