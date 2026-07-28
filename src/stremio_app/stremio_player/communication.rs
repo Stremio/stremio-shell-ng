@@ -281,27 +281,26 @@ pub enum CmdVal {
     Quadruple(MpvCmd, String, MpvLoadfileReplace, String),
     Quintuple(MpvCmd, String, MpvLoadfileReplace, String, String),
 }
+
+fn is_safe_start_option(arg: &str) -> bool {
+    const ALLOWED_OPTION: &str = "start=+";
+    arg.starts_with(ALLOWED_OPTION) && arg[ALLOWED_OPTION.len()..].parse::<u32>().is_ok()
+}
+
 impl From<CmdVal> for Vec<String> {
     fn from(cmd: CmdVal) -> Vec<String> {
-        const ALLOWED_OPTION: &str = "start=+";
-
         match cmd {
             CmdVal::Single(cmd) => vec![cmd.0.to_string()],
             CmdVal::Double(cmd, arg) => vec![cmd.to_string(), arg],
             CmdVal::Quadruple(cmd, arg1, arg2, arg3) => {
-                if arg3.starts_with(ALLOWED_OPTION)
-                    && arg3[ALLOWED_OPTION.len()..].parse::<u32>().is_ok()
-                {
+                if is_safe_start_option(&arg3) {
                     vec![cmd.to_string(), arg1, arg2.to_string(), arg3]
                 } else {
                     vec![cmd.to_string(), arg1, arg2.to_string()]
                 }
             }
             CmdVal::Quintuple(cmd, arg1, arg2, arg3, arg4) => {
-                if arg4.starts_with(ALLOWED_OPTION)
-                    && arg3.parse::<i32>().is_ok()
-                    && arg4[ALLOWED_OPTION.len()..].parse::<u32>().is_ok()
-                {
+                if arg3.parse::<i32>().is_ok() && is_safe_start_option(&arg4) {
                     vec![cmd.to_string(), arg1, arg2.to_string(), arg3, arg4]
                 } else {
                     vec![cmd.to_string(), arg1, arg2.to_string(), arg3]
