@@ -264,24 +264,48 @@ pub enum MpvCmd {
 }
 stringable!(MpvCmd);
 
+#[derive(Display, FromStr, Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+#[serde(try_from = "String", into = "String")]
+#[display(style = "kebab-case")]
+#[serde(untagged)]
+pub enum MpvLoadfileReplace {
+    Replace,
+}
+stringable!(MpvLoadfileReplace);
+
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 #[serde(untagged)]
 pub enum CmdVal {
     Single((MpvCmd,)),
     Double(MpvCmd, String),
-    Tripple(MpvCmd, String, String),
-    Quadruple(MpvCmd, String, String, String),
-    Quintuple(MpvCmd, String, String, String, String),
+    Quadruple(MpvCmd, String, MpvLoadfileReplace, String),
+    Quintuple(MpvCmd, String, MpvLoadfileReplace, String, String),
 }
 impl From<CmdVal> for Vec<String> {
     fn from(cmd: CmdVal) -> Vec<String> {
+        const ALLOWED_OPTION: &str = "start=+";
+
         match cmd {
             CmdVal::Single(cmd) => vec![cmd.0.to_string()],
             CmdVal::Double(cmd, arg) => vec![cmd.to_string(), arg],
-            CmdVal::Tripple(cmd, arg1, arg2) => vec![cmd.to_string(), arg1, arg2],
-            CmdVal::Quadruple(cmd, arg1, arg2, arg3) => vec![cmd.to_string(), arg1, arg2, arg3],
+            CmdVal::Quadruple(cmd, arg1, arg2, arg3) => {
+                if arg3.starts_with(ALLOWED_OPTION)
+                    && arg3[ALLOWED_OPTION.len()..].parse::<u32>().is_ok()
+                {
+                    vec![cmd.to_string(), arg1, arg2.to_string(), arg3]
+                } else {
+                    vec![cmd.to_string(), arg1, arg2.to_string()]
+                }
+            }
             CmdVal::Quintuple(cmd, arg1, arg2, arg3, arg4) => {
-                vec![cmd.to_string(), arg1, arg2, arg3, arg4]
+                if arg4.starts_with(ALLOWED_OPTION)
+                    && arg3.parse::<i32>().is_ok()
+                    && arg4[ALLOWED_OPTION.len()..].parse::<u32>().is_ok()
+                {
+                    vec![cmd.to_string(), arg1, arg2.to_string(), arg3, arg4]
+                } else {
+                    vec![cmd.to_string(), arg1, arg2.to_string(), arg3]
+                }
             }
         }
     }
