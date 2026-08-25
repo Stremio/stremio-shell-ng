@@ -217,6 +217,24 @@ impl PartialUi for Player {
     }
 }
 
+fn resolve_url(url: &str) -> String {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return url.to_string();
+    }
+
+    let result = reqwest::blocking::get(url);
+
+    let resolved_url = match result {
+        Ok(response) => response.url().to_string(),
+        Err(_) => {
+            eprintln!("[url-cache] failed to resolve {url}, using original");
+            url.to_string()
+        }
+    };
+
+    resolved_url
+}
+
 fn create_mpv(window_handle: HWND) -> Mpv {
     let mpv = Mpv::with_initializer(|initializer| {
         macro_rules! set_property {
@@ -580,7 +598,13 @@ fn create_message_thread(
         };
 
         let send_command = |cmd: CmdVal| {
-            let parts: Vec<String> = cmd.into();
+            let mut parts: Vec<String> = cmd.into();
+            if parts.first().map(String::as_str) == Some("loadfile") {
+                if let Some(url) = parts.get_mut(1) {
+                    let resolved = resolve_url(url);
+                    *url = resolved;
+                }
+            }
             if let Some((name, args)) = parts.split_first() {
                 if name == "loadfile" || name == "stop" {
                     let load_id = video_ready_state
