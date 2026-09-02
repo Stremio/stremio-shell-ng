@@ -1,3 +1,4 @@
+use crate::stremio_app::gpu_video_processing;
 use crate::stremio_app::ipc;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
@@ -243,7 +244,7 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         );
         // gpu-next: libplacebo VO with modern HDR tone-mapping; gpu, is the fallback.
         set_property!("vo", "gpu-next,gpu,");
-        for (name, value) in [
+        let mut options = vec![
             ("gpu-context", "d3d11"),
             ("d3d11-output-format", "auto"),
             ("d3d11-output-csp", "auto"),
@@ -251,10 +252,17 @@ fn create_mpv(window_handle: HWND) -> Mpv {
             ("target-colorspace-hint-mode", "target"),
             ("tone-mapping", "bt.2390"),
             ("dither-depth", "auto"),
-            ("deband", "yes"),
-            ("scale", "spline36"),
-            ("cscale", "spline36"),
-        ] {
+        ];
+        if gpu_video_processing::unified_memory_architecture() {
+            options.push(("profile", "fast"));
+        } else {
+            options.extend([
+                ("deband", "yes"),
+                ("scale", "spline36"),
+                ("cscale", "spline36"),
+            ]);
+        }
+        for (name, value) in options {
             if let Err(error) = initializer.set_property(name, value) {
                 eprintln!("mpv: cannot set {name}={value}: {error:?}");
             }
