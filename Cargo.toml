@@ -50,6 +50,7 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1.19", features = ["v4"]}
 base64 = "0.22"
 dirs = "6"
+winreg = "0.52"
 
 [build-dependencies]
 winres = "0.1"

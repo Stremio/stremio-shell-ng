@@ -184,7 +184,7 @@ impl PartialUi for WebView {
                                 document.addEventListener('click', event => {
                                     const link = event.target.closest('a[href]');
                                     const href = link && link.getAttribute('href');
-                                    if (href && href.startsWith('data:application/octet-stream;charset=utf-8;base64,')) {
+                                    if (href && (href.startsWith('data:application/octet-stream;charset=utf-8;base64,') || /^vlc:/i.test(href))) {
                                         event.preventDefault();
                                         window.chrome.webview.postMessage(JSON.stringify({id: 1, args: ['play-external', href]}));
                                     }

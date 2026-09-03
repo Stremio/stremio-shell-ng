@@ -1702,6 +1702,7 @@ dependencies = [
  "webview2-sys",
  "whoami",
  "winapi",
+ "winreg",
  "winres",
  "zip-extract",
 ]
