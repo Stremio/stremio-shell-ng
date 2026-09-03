@@ -137,6 +137,24 @@ impl PartialUi for WebView {
                         Ok(())
                     })?;
 
+                    let trusted_origin = endpoint
+                        .get()
+                        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+                        .map(|endpoint| endpoint.origin());
+                    let navigation_origin = trusted_origin.clone();
+                    webview.add_navigation_starting(move |_webview, event| {
+                        let uri = event.get_uri()?;
+                        if !same_origin(&navigation_origin, &uri) {
+                            event.put_cancel(true)?;
+                            if let Some(final_url) = safe_url(&uri) {
+                                if let Err(e) = open::that(final_url) {
+                                    eprintln!("Failed to open URL: {e}");
+                                }
+                            }
+                        }
+                        Ok(())
+                    })?;
+
                     if let Some(endpoint) = endpoint.get() {
                         if webview
                             .navigate(endpoint.as_str()).is_err() {
@@ -144,6 +162,11 @@ impl PartialUi for WebView {
                         };
                     }
                         webview.add_web_message_received(move |_w, msg| {
+                            let source = msg.get_source()?;
+                            if !same_origin(&trusted_origin, &source) {
+                                eprintln!("Ignored web message from {source}");
+                                return Ok(());
+                            }
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
                             Ok(())
@@ -310,5 +333,12 @@ impl PartialUi for WebView {
                 }
             }
         }
+    }
+}
+
+fn same_origin(trusted: &Option<url::Origin>, uri: &str) -> bool {
+    match trusted {
+        Some(trusted) => url::Url::parse(uri).is_ok_and(|url| url.origin() == *trusted),
+        None => false,
     }
 }
