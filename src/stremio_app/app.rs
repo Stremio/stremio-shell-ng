@@ -335,53 +335,13 @@ impl MainWindow {
                             }
                         }
                     }
-                    // play-external is temporary disabled due to security concerns
-                    // Some("play-external") => {
-                    //     if let Some(arg) = msg.get_params() {
-                    //         let arg = arg.as_str().unwrap_or("");
-                    //         let arg_lc = arg.to_lowercase();
-                    //         const ALLOWED_SCHEMES: &[&str] = &["mpv://", "vlc://", "potplayer://"];
-                    //         let allowed = ALLOWED_SCHEMES.iter().any(|s| arg_lc.starts_with(s));
-                    //         if !arg.is_empty() && allowed {
-                    //             if let Some(stream_url) =
-                    //                 arg_lc.starts_with("mpv://").then(|| &arg[6..])
-                    //             {
-                    //                 // `--` ends mpv's option parsing; the stream URL can't smuggle flags.
-                    //                 let mpv_paths: Vec<String> = vec![
-                    //                     std::env::var("ProgramFiles")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     std::env::var("ProgramFiles(x86)")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     std::env::var("LOCALAPPDATA")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\Programs\\mpv\\mpv.exe")),
-                    //                     std::env::var("LOCALAPPDATA")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     Some("mpv.exe".to_string()),
-                    //                 ]
-                    //                 .into_iter()
-                    //                 .flatten()
-                    //                 .collect();
-                    //                 for path in &mpv_paths {
-                    //                     if Command::new(path)
-                    //                         .arg("--")
-                    //                         .arg(stream_url)
-                    //                         .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
-                    //                         .spawn()
-                    //                         .is_ok()
-                    //                     {
-                    //                         break;
-                    //                     }
-                    //                 }
-                    //             } else {
-                    //                 open::that(arg).ok();
-                    //             }
-                    //         }
-                    //     }
-                    // }
+                    Some("play-external") => {
+                        if let Some(arg) = msg.get_params().and_then(|value| value.as_str()) {
+                            if let Err(error) = crate::stremio_app::external_player::play(arg) {
+                                eprintln!("External player request failed: {error}");
+                            }
+                        }
+                    }
                     Some("win-focus") => {
                         focus_sender.notice();
                     }

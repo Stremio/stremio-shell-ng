@@ -181,6 +181,14 @@ impl PartialUi for WebView {
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
+                                document.addEventListener('click', event => {
+                                    const link = event.target.closest('a[href]');
+                                    const href = link && link.getAttribute('href');
+                                    if (href && href.startsWith('data:application/octet-stream;charset=utf-8;base64,')) {
+                                        event.preventDefault();
+                                        window.chrome.webview.postMessage(JSON.stringify({id: 1, args: ['play-external', href]}));
+                                    }
+                                }, true);
                                 }}catch(e){}
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
