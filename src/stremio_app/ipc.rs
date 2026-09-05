@@ -76,6 +76,12 @@ impl RPCResponse {
                             "".to_string(),
                             gpu_video_processing::gpu_video_processing_supported().to_string(),
                         ],
+                        vec![
+                            "".to_string(),
+                            "nativeAssSubtitles".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
                     ],
                     signals: vec![],
                     methods: vec![vec!["onEvent".to_string(), "".to_string()]],

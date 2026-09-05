@@ -1,6 +1,6 @@
 use crate::stremio_app::stremio_player::communication::{
-    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, MpvCmd, PlayerEnded, PlayerProprChange,
-    PlayerResponse, PropKey, PropVal,
+    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
+    PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
@@ -194,43 +194,142 @@ fn set_gpu_video_processing_tokens() {
 
 #[test]
 fn command_stop_tokens() {
-    assert_tokens(
-        &InMsg(
-            InMsgFn::MpvCommand,
-            InMsgArgs::Cmd(CmdVal::Single((MpvCmd::Stop,))),
-        ),
-        &[
-            Token::TupleStruct {
-                name: "InMsg",
-                len: 2,
-            },
-            Token::Str("mpv-command"),
-            Token::Tuple { len: 1 },
-            Token::Str("stop"),
-            Token::TupleEnd,
-            Token::TupleStructEnd,
-        ],
+    assert_eq!(
+        serde_json::to_value(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(CmdVal::Stop),)).unwrap(),
+        serde_json::json!(["mpv-command", ["stop"]])
     );
 }
 
 #[test]
 fn command_loadfile_tokens() {
-    assert_tokens(
-        &InMsg(
+    assert_eq!(
+        serde_json::to_value(InMsg(
             InMsgFn::MpvCommand,
-            InMsgArgs::Cmd(CmdVal::Double(MpvCmd::Loadfile, "some_file".to_string())),
-        ),
-        &[
-            Token::TupleStruct {
-                name: "InMsg",
-                len: 2,
-            },
-            Token::Str("mpv-command"),
-            Token::Tuple { len: 2 },
-            Token::Str("loadfile"),
-            Token::Str("some_file"),
-            Token::TupleEnd,
-            Token::TupleStructEnd,
-        ],
+            InMsgArgs::Cmd(CmdVal::Loadfile("some_file".to_string())),
+        ))
+        .unwrap(),
+        serde_json::json!(["mpv-command", ["loadfile", "some_file"]])
+    );
+}
+
+#[test]
+fn command_sub_add_tokens() {
+    let command = CmdVal::SubAdd(
+        "https://example.com/subtitles.ass".to_string(),
+        "English".to_string(),
+        "eng".to_string(),
+    );
+    let value = serde_json::json!([
+        "sub-add",
+        "https://example.com/subtitles.ass",
+        "auto",
+        "English",
+        "eng"
+    ]);
+
+    assert_eq!(
+        serde_json::to_value(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(command.clone()),)).unwrap(),
+        serde_json::json!(["mpv-command", value])
+    );
+    assert_eq!(serde_json::from_value::<CmdVal>(value).unwrap(), command);
+}
+
+#[test]
+fn command_sub_remove_tokens() {
+    let command = CmdVal::SubRemove("7".to_string());
+    let value = serde_json::json!(["sub-remove", "7"]);
+
+    assert_eq!(
+        serde_json::to_value(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(command.clone()),)).unwrap(),
+        serde_json::json!(["mpv-command", value])
+    );
+    assert_eq!(serde_json::from_value::<CmdVal>(value).unwrap(), command);
+}
+
+#[test]
+fn command_loadfile_accepts_supported_start_shapes() {
+    for value in [
+        serde_json::json!(["loadfile", "some_file", "replace", "start=+12.5"]),
+        serde_json::json!(["loadfile", "some_file", "replace", "-1", "start=+12.5"]),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<CmdVal>(value).unwrap(),
+            CmdVal::LoadfileAt("some_file".to_string(), "start=+12.5".to_string())
+        );
+    }
+}
+
+#[test]
+fn command_loadfile_rejects_unsafe_options() {
+    for value in [
+        serde_json::json!(["loadfile"]),
+        serde_json::json!(["stop", "unexpected"]),
+        serde_json::json!(["loadfile", "some_file", "append"]),
+        serde_json::json!(["loadfile", "some_file", "replace", "0", "start=+1"]),
+        serde_json::json!([
+            "loadfile",
+            "some_file",
+            "replace",
+            "-1",
+            "stream-dump=/tmp/poc"
+        ]),
+        serde_json::json!([
+            "loadfile",
+            "some_file",
+            "replace",
+            "-1",
+            "start=+0,stream-dump=/tmp/poc"
+        ]),
+        serde_json::json!(["loadfile", "some_file", "replace", "-1", "start=+NaN"]),
+    ] {
+        assert!(serde_json::from_value::<CmdVal>(value).is_err());
+    }
+}
+
+#[test]
+fn command_subtitle_rejects_unsupported_shapes() {
+    for value in [
+        serde_json::json!(["sub-add", "https://example.com/subtitles.ass"]),
+        serde_json::json!([
+            "sub-add",
+            "https://example.com/subtitles.ass",
+            "cached",
+            "English",
+            "eng"
+        ]),
+        serde_json::json!(["sub-remove"]),
+        serde_json::json!(["sub-remove", "7", "unexpected"]),
+    ] {
+        assert!(serde_json::from_value::<CmdVal>(value).is_err());
+    }
+}
+
+#[test]
+fn subtitle_commands_require_deferred_selection_and_explicit_ids() {
+    for value in [
+        serde_json::json!([
+            "sub-add",
+            "https://example.com/a.ass",
+            "select",
+            "English",
+            "eng"
+        ]),
+        serde_json::json!(["sub-add", "https://example.com/a.ass"]),
+        serde_json::json!(["sub-remove"]),
+        serde_json::json!(["sub-remove", "-1"]),
+        serde_json::json!(["sub-remove", "0"]),
+        serde_json::json!(["sub-remove", "invalid"]),
+    ] {
+        assert!(serde_json::from_value::<CmdVal>(value).is_err());
+    }
+    assert_eq!(CmdVal::SubRemove("7".to_string()).media_transition(), None);
+    assert_eq!(
+        CmdVal::SubAdd(
+            "a.ass".to_string(),
+            "English".to_string(),
+            "eng".to_string()
+        )
+        .media_transition(),
+        None
     );
 }
