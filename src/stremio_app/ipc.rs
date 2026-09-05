@@ -8,6 +8,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type Channel = RefCell<Option<(flume::Sender<String>, flume::Receiver<String>)>>;
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheDirectoryRequest {
+    pub request_id: u64,
+    pub server_url: String,
+    pub directory: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RPCRequest {
     pub id: u64,
@@ -55,7 +63,7 @@ pub struct RPCResponse {
 }
 
 impl RPCResponse {
-    pub fn get_handshake() -> String {
+    pub fn get_handshake(streaming_server_url: Option<&str>) -> String {
         let resp = RPCResponse {
             id: 0,
             object: "transport".to_string(),
@@ -75,6 +83,18 @@ impl RPCResponse {
                             "gpuVideoProcessing".to_string(),
                             "".to_string(),
                             gpu_video_processing::gpu_video_processing_supported().to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
+                            "cacheDirectoryPicker".to_string(),
+                            "".to_string(),
+                            streaming_server_url.is_some().to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
+                            "streamingServerUrl".to_string(),
+                            "".to_string(),
+                            streaming_server_url.unwrap_or_default().to_string(),
                         ],
                     ],
                     signals: vec![],
@@ -120,5 +140,19 @@ impl RPCResponse {
     }
     pub fn media_key(action: &str) -> String {
         Self::response_message(Some(json!(["media-key", action])))
+    }
+    pub fn cache_directory_selected(
+        request_id: u64,
+        result: Result<Option<String>, String>,
+    ) -> String {
+        let (path, error) = match result {
+            Ok(path) => (path, None),
+            Err(error) => (None, Some(error)),
+        };
+        Self::response_message(Some(json!(["cache-directory-selected", {
+            "requestId": request_id,
+            "path": path,
+            "error": error,
+        }])))
     }
 }

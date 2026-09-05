@@ -20,7 +20,7 @@ use crate::stremio_app::{
         safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL,
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
-    ipc::{RPCRequest, RPCResponse},
+    ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     splash::SplashImage,
     stremio_player::Player,
     stremio_wevbiew::WebView,
@@ -47,11 +47,14 @@ pub struct MainWindow {
     pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
+    pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
+    #[nwg_resource(title: "Choose cache folder", action: nwg::FileDialogAction::OpenDirectory)]
+    pub cache_directory_picker: nwg::FileDialog,
     #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [Self::on_quit(SELF, EVT_DATA)],
@@ -92,6 +95,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_focus_notice] )]
     pub focus_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
+    pub cache_directory_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -272,6 +278,14 @@ impl MainWindow {
 
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
+        let requested_cache_directory = self.requested_cache_directory.clone();
+        let cache_directory_sender = self.cache_directory_notice.sender();
+        let local_server_url = self.server.server_url().filter(|server_url| {
+            Url::parse(server_url).is_ok_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+            })
+        });
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -282,7 +296,36 @@ impl MainWindow {
                 match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
-                        web_tx_web.send(RPCResponse::get_handshake()).ok();
+                        web_tx_web
+                            .send(RPCResponse::get_handshake(local_server_url.as_deref()))
+                            .ok();
+                    }
+                    Some("pick-cache-directory") => {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<CacheDirectoryRequest>(params.clone()).ok()
+                        }) {
+                            let mut pending = requested_cache_directory.lock().unwrap();
+                            let error = if local_server_url.as_deref()
+                                != Some(request.server_url.as_str())
+                            {
+                                Some("The folder picker is only available for the shell's local server")
+                            } else if pending.is_some() {
+                                Some("A folder picker is already open")
+                            } else {
+                                None
+                            };
+                            if let Some(error) = error {
+                                web_tx_web
+                                    .send(RPCResponse::cache_directory_selected(
+                                        request.request_id,
+                                        Err(error.to_owned()),
+                                    ))
+                                    .ok();
+                            } else {
+                                *pending = Some(request);
+                                cache_directory_sender.notice();
+                            }
+                        }
                     }
                     Some("win-set-visibility") => {
                         if let Some(fullscreen) = msg
@@ -521,6 +564,38 @@ impl MainWindow {
     }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();
+    }
+    fn on_cache_directory_notice(&self) {
+        let request = self.requested_cache_directory.lock().unwrap().clone();
+        let Some(request) = request else { return };
+        if let Some(directory) = &request.directory {
+            // An unplugged drive must not prevent choosing a different folder.
+            self.cache_directory_picker
+                .set_default_folder(directory)
+                .ok();
+        }
+        // Show runs a nested message loop; keep the pending request, but no locks or borrows.
+        let result = if self.cache_directory_picker.run(Some(&self.window)) {
+            self.cache_directory_picker
+                .get_selected_item()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    path.into_string()
+                        .map(Some)
+                        .map_err(|_| "The selected folder path is not valid Unicode".to_owned())
+                })
+        } else {
+            Ok(None)
+        };
+        self.requested_cache_directory.lock().unwrap().take();
+        if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
+            web_tx
+                .send(RPCResponse::cache_directory_selected(
+                    request.request_id,
+                    result,
+                ))
+                .ok();
+        }
     }
     fn on_focus_notice(&self) {
         self.window.set_visible(true);
