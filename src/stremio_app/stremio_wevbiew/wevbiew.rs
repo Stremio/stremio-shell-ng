@@ -39,6 +39,14 @@ pub struct WebView {
 }
 
 impl WebView {
+    pub fn set_interface_scale(&self, scale: u64) {
+        if let Some(controller) = self.controller.get() {
+            if let Err(error) = controller.put_zoom_factor(scale as f64 / 100.0) {
+                eprintln!("Cannot set interface scale: {error}");
+            }
+        }
+    }
+
     pub fn fit_to_window(&self, hwnd: Option<HWND>) {
         if let Some(hwnd) = hwnd {
             unsafe {
@@ -110,6 +118,7 @@ impl PartialUi for WebView {
                     settings.put_is_status_bar_enabled(false).ok();
                     settings.put_are_dev_tools_enabled(true).ok();
                     settings.put_are_default_context_menus_enabled(true).ok();
+                    // Web handles zoom shortcuts so they update the saved interface scale.
                     settings.put_is_zoom_control_enabled(false).ok();
                     settings.put_is_built_in_error_page_enabled(false).ok();
                     settings.put_are_host_objects_allowed(false).ok();
