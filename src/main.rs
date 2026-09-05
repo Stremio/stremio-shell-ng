@@ -74,16 +74,11 @@ fn main() {
         },
     );
 
-    let command = match opt.command {
-        Some(file) => {
-            if Path::new(&file).exists() {
-                "file:///".to_string() + &file.replace('\\', "/")
-            } else {
-                file
-            }
-        }
-        None => "".to_string(),
-    };
+    let command = opt
+        .command
+        .filter(|command| !command.is_empty())
+        .map(stremio_app::open_media::normalize)
+        .unwrap_or_default();
 
     // Single application IPC
     let mut commands_path = IPC_PATH.to_string();

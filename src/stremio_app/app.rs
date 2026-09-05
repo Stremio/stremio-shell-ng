@@ -175,14 +175,34 @@ impl MainWindow {
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
-        let web_tx_arg = web_tx.clone();
+        let web_tx_open = web_tx.clone();
         let web_tx_upd = web_tx.clone();
         let web_rx = web_rx.clone();
 
         let (updater_tx, updater_rx) = flume::unbounded::<String>();
         let updater_tx_web = updater_tx.clone();
 
-        let command_clone = self.command.clone();
+        let (open_sender, open_receiver) = flume::unbounded();
+        let open_sender_web = open_sender.clone();
+        let command = self.command.clone();
+        thread::spawn(move || {
+            let mut ready = false;
+            let mut pending = (!command.is_empty()).then_some(command);
+            for request in open_receiver {
+                match request {
+                    Some(input) => pending = Some(input),
+                    None => ready = true,
+                }
+                if ready {
+                    if let Some(input) = pending.take() {
+                        let message = super::open_media::message(&input);
+                        web_tx_open
+                            .send(RPCResponse::response_message(Some(message)))
+                            .ok();
+                    }
+                }
+            }
+        });
 
         // Single application IPC
         let socket_path = Path::new(
@@ -248,9 +268,9 @@ impl MainWindow {
                     stream.read_to_end(&mut buf).ok();
                     if let Ok(s) = str::from_utf8(&buf) {
                         focus_sender.notice();
-                        // ['open-media', url]
-                        web_tx_arg.send(RPCResponse::open_media(s.to_string())).ok();
-                        println!("{s}");
+                        if !s.is_empty() {
+                            open_sender.send(Some(s.to_string())).ok();
+                        }
                     }
                 }
             });
@@ -304,10 +324,7 @@ impl MainWindow {
                             .send("check_for_update".to_owned())
                             .expect("Failed to send value to updater channel");
 
-                        let command_ref = command_clone.clone();
-                        if !command_ref.is_empty() {
-                            web_tx_web.send(RPCResponse::open_media(command_ref)).ok();
-                        }
+                        open_sender_web.send(None).ok();
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
