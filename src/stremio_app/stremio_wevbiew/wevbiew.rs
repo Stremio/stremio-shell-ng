@@ -29,7 +29,7 @@ const VK_F: u32 = b'F' as u32;
 
 #[derive(Default)]
 pub struct WebView {
-    pub endpoint: Rc<OnceCell<String>>,
+    endpoint: Rc<RefCell<Option<String>>>,
     pub dev_tools: Rc<OnceCell<bool>>,
     pub controller: Rc<OnceCell<Controller>>,
     pub channel: ipc::Channel,
@@ -39,6 +39,32 @@ pub struct WebView {
 }
 
 impl WebView {
+    pub fn navigate(&self, endpoint: String) -> webview2::Result<()> {
+        *self.endpoint.borrow_mut() = Some(endpoint.clone());
+        if let Some(controller) = self.controller.get() {
+            Self::navigate_webview(&controller.get_webview()?, &endpoint)?;
+        }
+        Ok(())
+    }
+
+    fn navigate_webview(webview: &webview2::WebView, endpoint: &str) -> webview2::Result<()> {
+        let source = webview.get_source()?;
+        if source.split('#').next() == endpoint.split('#').next() {
+            // A fragment-only navigation would leave Core connected to the failed server.
+            // Set the new endpoint before reloading, including when the port is unchanged.
+            let fragment = endpoint.split_once('#').map(|(_, hash)| hash).unwrap_or("");
+            webview.execute_script(
+                &format!(
+                    "window.location.hash = {}; window.location.reload();",
+                    json!(fragment)
+                ),
+                |_| Ok(()),
+            )
+        } else {
+            webview.navigate(endpoint)
+        }
+    }
+
     pub fn fit_to_window(&self, hwnd: Option<HWND>) {
         if let Some(hwnd) = hwnd {
             unsafe {
@@ -137,12 +163,7 @@ impl PartialUi for WebView {
                         Ok(())
                     })?;
 
-                    if let Some(endpoint) = endpoint.get() {
-                        if webview
-                            .navigate(endpoint.as_str()).is_err() {
-                                tx_web.clone().send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
-                        };
-                    }
+                    let navigation_tx = tx_web.clone();
                         webview.add_web_message_received(move |_w, msg| {
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
@@ -230,9 +251,15 @@ impl PartialUi for WebView {
                         })
                         .unwrap();
 
+                        let navigation = endpoint.borrow().clone();
                         controller_clone
                             .set(controller)
                             .expect("Cannot update the controller");
+                        if let Some(endpoint) = navigation {
+                            if WebView::navigate_webview(&webview, &endpoint).is_err() {
+                                navigation_tx.send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
+                            }
+                        }
                         Ok(())
                     })
             });
