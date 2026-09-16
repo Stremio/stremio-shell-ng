@@ -47,6 +47,7 @@ pub struct MainWindow {
     pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
+    pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
@@ -83,6 +84,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
     pub toggle_fullscreen_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_set_interface_scale_notice] )]
+    pub set_interface_scale_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [nwg::stop_thread_dispatch()] )]
     pub quit_notice: nwg::Notice,
@@ -265,6 +269,7 @@ impl MainWindow {
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
+        let set_interface_scale_sender = self.set_interface_scale_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
         let focus_sender = self.focus_notice.sender();
@@ -272,6 +277,7 @@ impl MainWindow {
 
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
+        let requested_interface_scale = self.requested_interface_scale.clone();
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -283,6 +289,17 @@ impl MainWindow {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
                         web_tx_web.send(RPCResponse::get_handshake()).ok();
+                    }
+                    Some("win-set-interface-scale") => {
+                        if let Some(scale) = msg
+                            .get_params()
+                            .and_then(|params| params.get("scale"))
+                            .and_then(|value| value.as_u64())
+                            .filter(|scale| (75..=175).contains(scale))
+                        {
+                            *requested_interface_scale.lock().unwrap() = Some(scale);
+                            set_interface_scale_sender.notice();
+                        }
                     }
                     Some("win-set-visibility") => {
                         if let Some(fullscreen) = msg
@@ -518,6 +535,12 @@ impl MainWindow {
             }
         }
         self.transmit_window_visibility_change();
+    }
+    fn on_set_interface_scale_notice(&self) {
+        let scale = self.requested_interface_scale.lock().unwrap().take();
+        if let Some(scale) = scale {
+            self.webview.set_interface_scale(scale);
+        }
     }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();

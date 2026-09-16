@@ -78,6 +78,12 @@ impl RPCResponse {
                         ],
                         vec![
                             "".to_string(),
+                            "nativeInterfaceScale".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
                             "nativeAssSubtitles".to_string(),
                             "".to_string(),
                             "true".to_string(),
