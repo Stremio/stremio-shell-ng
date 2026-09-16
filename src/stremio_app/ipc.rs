@@ -96,6 +96,12 @@ impl RPCResponse {
                             "".to_string(),
                             streaming_server_url.unwrap_or_default().to_string(),
                         ],
+                        vec![
+                            "".to_string(),
+                            "nativeInterfaceScale".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
                     ],
                     signals: vec![],
                     methods: vec![vec!["onEvent".to_string(), "".to_string()]],
