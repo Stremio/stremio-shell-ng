@@ -770,7 +770,7 @@ fn create_message_thread(
     thread::spawn(move || {
         // -- Helpers --
         let subtitle_mpv = mpv
-            .create_client(Some("subtitle-loader"))
+            .create_client(None)
             .expect("cannot create MPV subtitle client");
         let (subtitle_request_sender, subtitle_request_receiver) = flume::unbounded();
         let _subtitle_thread = create_subtitle_thread(subtitle_mpv, subtitle_request_receiver);
