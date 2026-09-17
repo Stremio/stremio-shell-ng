@@ -18108,7 +18108,7 @@
         get: key => cache[key] || null
     };
 }, function(module, exports, __webpack_require__) {
-    var url = __webpack_require__(6), os = __webpack_require__(22), events = __webpack_require__(4), path = __webpack_require__(5), util = __webpack_require__(0), fs = __webpack_require__(1), fetch = __webpack_require__(34), connect = __webpack_require__(586), rangeParser = __webpack_require__(176), bodyParser = __webpack_require__(50), Router = __webpack_require__(100), mime = __webpack_require__(44), pump = __webpack_require__(179), PeerSearch = __webpack_require__(612), parseTorrentFile = __webpack_require__(303), EngineFS = new events.EventEmitter, Counter = __webpack_require__(662), GuessFileIdx = __webpack_require__(663), spoofedPeerId = __webpack_require__(664), safeStatelessRegex = __webpack_require__(80), IH_REGEX = new RegExp("([0-9A-Fa-f]){40}", "g");
+    var url = __webpack_require__(6), os = __webpack_require__(22), events = __webpack_require__(4), path = __webpack_require__(5), util = __webpack_require__(0), fs = __webpack_require__(1), fetch = __webpack_require__(34), connect = __webpack_require__(586), rangeParser = __webpack_require__(176), bodyParser = __webpack_require__(50), Router = __webpack_require__(100), mime = __webpack_require__(44), contentDisposition = __webpack_require__(494), pump = __webpack_require__(179), PeerSearch = __webpack_require__(612), parseTorrentFile = __webpack_require__(303), EngineFS = new events.EventEmitter, Counter = __webpack_require__(662), GuessFileIdx = __webpack_require__(663), spoofedPeerId = __webpack_require__(664), safeStatelessRegex = __webpack_require__(80), IH_REGEX = new RegExp("([0-9A-Fa-f]){40}", "g");
     EngineFS.STREAM_TIMEOUT = 3e4, EngineFS.ENGINE_TIMEOUT = 6e4;
     var engines = {};
     function createEngine(infoHash, options, cb) {
@@ -18260,7 +18260,7 @@
             range && range.endsWith("-") && (EngineFS.getDefaults(e.infoHash).circularBuffer || prewarmStream(e.infoHash, e.files.indexOf(handle))), 
             range = range && rangeParser(handle.length, range)[0], res.setHeader("Accept-Ranges", "bytes"), 
             res.setHeader("Content-Type", mime.lookup(handle.name)), res.setHeader("Cache-Control", "max-age=0, no-cache"), 
-            u.query.download && res.setHeader("Content-Disposition", 'attachment; filename="' + handle.name + '";'), 
+            u.query.download && res.setHeader("Content-Disposition", contentDisposition(handle.name)),
             u.query.subtitles && res.setHeader("CaptionInfo.sec", u.query.subtitles);
             var opts = {};
             return req.headers["enginefs-prio"] && (opts.priority = parseInt(req.headers["enginefs-prio"]) || 1), 
