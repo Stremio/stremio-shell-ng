@@ -4,7 +4,6 @@ use rand::Rng;
 use serde_json;
 use std::{
     cell::RefCell,
-    collections::VecDeque,
     io::Read,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
@@ -35,18 +34,10 @@ use crate::stremio_app::{
 use super::discord::DiscordRpc;
 use super::stremio_server::{ServerEvent, StremioServer};
 
-#[derive(Default)]
-enum WebStartup {
-    #[default]
-    WaitingForServer,
-    Loading,
+pub enum OpenRequest {
+    Input(String),
     Ready,
-}
-
-#[derive(Default)]
-pub struct PendingOpenMedia {
-    state: WebStartup,
-    commands: VecDeque<String>,
+    Reset,
 }
 
 #[derive(Default, NwgUi)]
@@ -65,7 +56,7 @@ pub struct MainWindow {
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
-    pub pending_open_media: Arc<Mutex<PendingOpenMedia>>,
+    pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
     pub local_server_url: Arc<Mutex<Option<String>>>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
@@ -193,20 +184,36 @@ impl MainWindow {
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
-        let web_tx_arg = web_tx.clone();
+        let web_tx_open = web_tx.clone();
         let web_tx_upd = web_tx.clone();
         let web_rx = web_rx.clone();
 
         let (updater_tx, updater_rx) = flume::unbounded::<String>();
         let updater_tx_web = updater_tx.clone();
 
-        if !self.command.is_empty() {
-            self.pending_open_media
-                .lock()
-                .unwrap()
-                .commands
-                .push_back(self.command.clone());
-        }
+        let (open_sender, open_receiver) = flume::unbounded();
+        let open_sender_web = open_sender.clone();
+        *self.open_media_sender.borrow_mut() = Some(open_sender.clone());
+        let command = self.command.clone();
+        thread::spawn(move || {
+            let mut ready = false;
+            let mut pending = (!command.is_empty()).then_some(command);
+            for request in open_receiver {
+                match request {
+                    OpenRequest::Input(input) => pending = Some(input),
+                    OpenRequest::Ready => ready = true,
+                    OpenRequest::Reset => ready = false,
+                }
+                if ready {
+                    if let Some(input) = pending.take() {
+                        let message = super::open_media::message(&input);
+                        web_tx_open
+                            .send(RPCResponse::response_message(Some(message)))
+                            .ok();
+                    }
+                }
+            }
+        });
 
         // Single application IPC
         let socket_path = Path::new(
@@ -266,7 +273,6 @@ impl MainWindow {
 
         if let Ok(mut listener) = PipeServer::bind(socket_path) {
             let focus_sender = self.focus_notice.sender();
-            let pending_open_media = self.pending_open_media.clone();
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
                     let mut buf = vec![];
@@ -274,14 +280,8 @@ impl MainWindow {
                     if let Ok(s) = str::from_utf8(&buf) {
                         focus_sender.notice();
                         if !s.is_empty() {
-                            let mut pending = pending_open_media.lock().unwrap();
-                            if matches!(pending.state, WebStartup::Ready) {
-                                web_tx_arg.send(RPCResponse::open_media(s.to_string())).ok();
-                            } else {
-                                pending.commands.push_back(s.to_string());
-                            }
+                            open_sender.send(OpenRequest::Input(s.to_string())).ok();
                         }
-                        println!("{s}");
                     }
                 }
             });
@@ -304,7 +304,6 @@ impl MainWindow {
 
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
-        let pending_open_media = self.pending_open_media.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
         let local_server_url = self.local_server_url.clone();
@@ -382,13 +381,7 @@ impl MainWindow {
                             .send("check_for_update".to_owned())
                             .expect("Failed to send value to updater channel");
 
-                        let mut pending = pending_open_media.lock().unwrap();
-                        if matches!(pending.state, WebStartup::Loading) {
-                            pending.state = WebStartup::Ready;
-                            for command in pending.commands.drain(..) {
-                                web_tx_web.send(RPCResponse::open_media(command)).ok();
-                            }
-                        }
+                        open_sender_web.send(OpenRequest::Ready).ok();
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -568,7 +561,9 @@ impl MainWindow {
                 })
             })
             .map(str::to_owned);
-        self.pending_open_media.lock().unwrap().state = WebStartup::Loading;
+        if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+            sender.send(OpenRequest::Reset).ok();
+        }
         let endpoint = if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/')
         {
             server_url
@@ -592,7 +587,9 @@ impl MainWindow {
                 ServerEvent::Ready(endpoint) => self.load_webui(Some(&endpoint)),
                 ServerEvent::Failed(details) => {
                     *self.local_server_url.lock().unwrap() = None;
-                    self.pending_open_media.lock().unwrap().state = WebStartup::WaitingForServer;
+                    if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+                        sender.send(OpenRequest::Reset).ok();
+                    }
                     self.splash_screen.hide();
                     self.on_show();
                     let content = format!(

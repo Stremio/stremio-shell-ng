@@ -102,6 +102,12 @@ impl RPCResponse {
                             "".to_string(),
                             "true".to_string(),
                         ],
+                        vec![
+                            "".to_string(),
+                            "nativeAssSubtitles".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
                     ],
                     signals: vec![],
                     methods: vec![vec!["onEvent".to_string(), "".to_string()]],
@@ -132,9 +138,6 @@ impl RPCResponse {
         Self::response_message(Some(json!(["win-state-changed" ,{
             "state": state,
         }])))
-    }
-    pub fn open_media(url: String) -> String {
-        Self::response_message(Some(json!(["open-media", url])))
     }
     pub fn update_available() -> String {
         Self::response_message(Some(json!(["autoupdater-show-notif"])))
