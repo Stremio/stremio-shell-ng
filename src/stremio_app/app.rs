@@ -32,7 +32,13 @@ use crate::stremio_app::{
 };
 
 use super::discord::DiscordRpc;
-use super::stremio_server::StremioServer;
+use super::stremio_server::{ServerEvent, StremioServer};
+
+pub enum OpenRequest {
+    Input(String),
+    Ready,
+    Reset,
+}
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
@@ -50,6 +56,8 @@ pub struct MainWindow {
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
+    pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
+    pub local_server_url: Arc<Mutex<Option<String>>>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
@@ -79,6 +87,7 @@ pub struct MainWindow {
     #[nwg_partial(parent: window)]
     pub splash_screen: SplashImage,
     #[nwg_partial(parent: window)]
+    #[nwg_events((notice, OnNotice): [Self::on_server_notice])]
     pub server: StremioServer,
     #[nwg_partial(parent: window)]
     pub player: Player,
@@ -143,16 +152,6 @@ impl MainWindow {
         }
     }
     fn on_init(&self) {
-        let webui_url =
-            if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/') {
-                self.server
-                    .server_url()
-                    .map(|server_url| web_endpoint_with_streaming_server(&server_url))
-                    .unwrap_or_else(|| self.webui_url.clone())
-            } else {
-                self.webui_url.clone()
-            };
-        self.webview.endpoint.set(webui_url).ok();
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
@@ -194,14 +193,16 @@ impl MainWindow {
 
         let (open_sender, open_receiver) = flume::unbounded();
         let open_sender_web = open_sender.clone();
+        *self.open_media_sender.borrow_mut() = Some(open_sender.clone());
         let command = self.command.clone();
         thread::spawn(move || {
             let mut ready = false;
             let mut pending = (!command.is_empty()).then_some(command);
             for request in open_receiver {
                 match request {
-                    Some(input) => pending = Some(input),
-                    None => ready = true,
+                    OpenRequest::Input(input) => pending = Some(input),
+                    OpenRequest::Ready => ready = true,
+                    OpenRequest::Reset => ready = false,
                 }
                 if ready {
                     if let Some(input) = pending.take() {
@@ -279,7 +280,7 @@ impl MainWindow {
                     if let Ok(s) = str::from_utf8(&buf) {
                         focus_sender.notice();
                         if !s.is_empty() {
-                            open_sender.send(Some(s.to_string())).ok();
+                            open_sender.send(OpenRequest::Input(s.to_string())).ok();
                         }
                     }
                 }
@@ -305,12 +306,7 @@ impl MainWindow {
         let requested_fullscreen = self.requested_fullscreen.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
-        let local_server_url = self.server.server_url().filter(|server_url| {
-            Url::parse(server_url).is_ok_and(|url| {
-                matches!(url.scheme(), "http" | "https")
-                    && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
-            })
-        });
+        let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
 
         thread::spawn(move || loop {
@@ -319,6 +315,7 @@ impl MainWindow {
                 .ok()
                 .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())
             {
+                let local_server_url = local_server_url.lock().unwrap().clone();
                 match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
@@ -384,7 +381,7 @@ impl MainWindow {
                             .send("check_for_update".to_owned())
                             .expect("Failed to send value to updater channel");
 
-                        open_sender_web.send(None).ok();
+                        open_sender_web.send(OpenRequest::Ready).ok();
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -549,6 +546,75 @@ impl MainWindow {
                 }
             } // recv
         }); // thread
+        if self.server.development() {
+            self.load_webui(None);
+        } else {
+            self.server.start();
+        }
+    }
+    fn load_webui(&self, server_url: Option<&str>) {
+        *self.local_server_url.lock().unwrap() = server_url
+            .filter(|server_url| {
+                Url::parse(server_url).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+                })
+            })
+            .map(str::to_owned);
+        if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+            sender.send(OpenRequest::Reset).ok();
+        }
+        let endpoint = if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/')
+        {
+            server_url
+                .map(web_endpoint_with_streaming_server)
+                .unwrap_or_else(|| self.webui_url.clone())
+        } else {
+            self.webui_url.clone()
+        };
+        if let Err(error) = self.webview.navigate(endpoint) {
+            self.splash_screen.hide();
+            nwg::modal_error_message(
+                &self.window,
+                "Cannot load Stremio Web UI",
+                &error.to_string(),
+            );
+        }
+    }
+    fn on_server_notice(&self) {
+        for event in self.server.events() {
+            match event {
+                ServerEvent::Ready(endpoint) => self.load_webui(Some(&endpoint)),
+                ServerEvent::Failed(details) => {
+                    *self.local_server_url.lock().unwrap() = None;
+                    if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+                        sender.send(OpenRequest::Reset).ok();
+                    }
+                    self.splash_screen.hide();
+                    self.on_show();
+                    let content = format!(
+                        "Stremio's local streaming server is unavailable.\n\n{details}\n\nChoose Retry to start the server again, or Cancel to exit Stremio."
+                    );
+                    let choice = nwg::modal_message(
+                        &self.window,
+                        &nwg::MessageParams {
+                            title: "Stremio server",
+                            content: &content,
+                            buttons: nwg::MessageButtons::RetryCancel,
+                            icons: nwg::MessageIcons::Error,
+                        },
+                    );
+                    if choice == nwg::MessageChoice::Retry {
+                        if !self.no_splash {
+                            self.splash_screen.show();
+                        }
+                        self.server.start();
+                    } else {
+                        self.on_exit();
+                    }
+                }
+            }
+        }
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
