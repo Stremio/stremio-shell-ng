@@ -172,8 +172,28 @@ impl PartialUi for WebView {
                         Ok(())
                     })?;
 
+                    let navigation_endpoint = endpoint.clone();
+                    webview.add_navigation_starting(move |_webview, event| {
+                        let uri = event.get_uri()?;
+                        if !same_origin(&trusted_origin(&navigation_endpoint), &uri) {
+                            event.put_cancel(true)?;
+                            if let Some(final_url) = safe_url(&uri) {
+                                if let Err(e) = open::that(final_url) {
+                                    eprintln!("Failed to open URL: {e}");
+                                }
+                            }
+                        }
+                        Ok(())
+                    })?;
+
                     let navigation_tx = tx_web.clone();
+                    let message_endpoint = endpoint.clone();
                         webview.add_web_message_received(move |_w, msg| {
+                            let source = msg.get_source()?;
+                            if !same_origin(&trusted_origin(&message_endpoint), &source) {
+                                eprintln!("Ignored web message from {source}");
+                                return Ok(());
+                            }
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
                             Ok(())
@@ -211,6 +231,14 @@ impl PartialUi for WebView {
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
+                                document.addEventListener('click', event => {
+                                    const link = event.target.closest('a[href]');
+                                    const href = link && link.getAttribute('href');
+                                    if (href && (href.startsWith('data:application/octet-stream;charset=utf-8;base64,') || /^vlc:/i.test(href))) {
+                                        event.preventDefault();
+                                        window.chrome.webview.postMessage(JSON.stringify({id: 1, args: ['play-external', href]}));
+                                    }
+                                }, true);
                                 }}catch(e){}
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
@@ -338,5 +366,20 @@ impl PartialUi for WebView {
                 }
             }
         }
+    }
+}
+
+fn trusted_origin(endpoint: &RefCell<Option<String>>) -> Option<url::Origin> {
+    endpoint
+        .borrow()
+        .as_deref()
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+        .map(|endpoint| endpoint.origin())
+}
+
+fn same_origin(trusted: &Option<url::Origin>, uri: &str) -> bool {
+    match trusted {
+        Some(trusted) => url::Url::parse(uri).is_ok_and(|url| url.origin() == *trusted),
+        None => false,
     }
 }
