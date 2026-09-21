@@ -555,7 +555,7 @@ fn apply_display_output_mode(mpv: &Mpv, state: DisplayOutputState, gpu_video_pro
         DisplayOutputMode::Sdr => [
             ("d3d11-output-csp", "srgb"),
             ("target-colorspace-hint", "yes"),
-            ("target-trc", "srgb"),
+            ("target-trc", "auto"),
             ("target-prim", "bt.709"),
         ],
     };
