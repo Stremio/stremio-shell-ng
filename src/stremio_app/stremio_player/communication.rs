@@ -172,6 +172,7 @@ pub enum BoolProp {
     Seeking,
     EofReached,
     Keepaspect,
+    AudioNormalizeDownmix,
 }
 stringable!(BoolProp);
 // Int
@@ -207,6 +208,7 @@ stringable!(FpProp);
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum StrProp {
+    AudioChannels,
     FfmpegVersion,
     Hwdec,
     InputDefaultBindings,
