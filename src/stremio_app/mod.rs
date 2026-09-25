@@ -4,6 +4,8 @@ pub mod discord;
 pub mod external_player;
 pub mod gpu_video_processing;
 pub mod ipc;
+pub mod mpv_hwnd;
+pub mod pip_window;
 pub mod stremio_player;
 pub mod stremio_server;
 pub mod stremio_wevbiew;
