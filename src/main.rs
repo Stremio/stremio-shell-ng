@@ -52,15 +52,6 @@ struct Opt {
 }
 
 fn main() {
-    // native-windows-gui has some basic high DPI support with the high-dpi
-    // feature. It supports the "System DPI Awareness" mode, but not the more
-    // advanced Per-Monitor (v2) DPI Awareness modes.
-    //
-    // Use an application manifest to get rid of this deprecated warning.
-    #[allow(deprecated)]
-    unsafe {
-        nwg::set_dpi_awareness()
-    };
     nwg::enable_visual_styles();
 
     let opt = Opt::parse();

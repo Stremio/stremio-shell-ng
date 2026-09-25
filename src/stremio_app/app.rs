@@ -13,7 +13,16 @@ use std::{
     thread, time,
 };
 use url::Url;
-use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
+use winapi::{
+    shared::windef::RECT,
+    um::{
+        winbase::CREATE_BREAKAWAY_FROM_JOB,
+        winuser::{
+            GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
+            WS_CAPTION, WS_EX_TOPMOST,
+        },
+    },
+};
 
 use crate::stremio_app::{
     constants::{
@@ -156,6 +165,27 @@ impl MainWindow {
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
                 saved_style.set_title_bar_color(hwnd);
+                nwg::bind_raw_event_handler(&self.window.handle, 0x10001, |hwnd, msg, _w, l| {
+                    if msg != WM_DPICHANGED
+                        || unsafe { GetWindowLongA(hwnd, GWL_STYLE) } as u32 & WS_CAPTION == 0
+                    {
+                        return None;
+                    }
+                    let rect = unsafe { &*(l as *const RECT) };
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            rect.left,
+                            rect.top,
+                            rect.right - rect.left,
+                            rect.bottom - rect.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    Some(0)
+                })
+                .ok();
                 if let Some(window_settings) = WindowSettings::load() {
                     saved_style
                         .restore_window_placement(hwnd, window_settings.to_window_placement());
