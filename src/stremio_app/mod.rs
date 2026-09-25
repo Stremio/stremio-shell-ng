@@ -1,6 +1,7 @@
 pub mod app;
 pub use app::MainWindow;
 pub mod discord;
+pub mod external_player;
 pub mod gpu_video_processing;
 pub mod ipc;
 pub mod mpv_hwnd;
@@ -10,6 +11,7 @@ pub mod stremio_server;
 pub mod stremio_wevbiew;
 pub use ipc::RPCResponse;
 pub mod named_pipe;
+pub mod open_media;
 pub mod splash;
 pub mod systray;
 pub mod window_helper;

@@ -29,7 +29,7 @@ const VK_F: u32 = b'F' as u32;
 
 #[derive(Default)]
 pub struct WebView {
-    pub endpoint: Rc<OnceCell<String>>,
+    endpoint: Rc<RefCell<Option<String>>>,
     pub dev_tools: Rc<OnceCell<bool>>,
     pub controller: Rc<OnceCell<Controller>>,
     pub channel: ipc::Channel,
@@ -39,6 +39,40 @@ pub struct WebView {
 }
 
 impl WebView {
+    pub fn navigate(&self, endpoint: String) -> webview2::Result<()> {
+        *self.endpoint.borrow_mut() = Some(endpoint.clone());
+        if let Some(controller) = self.controller.get() {
+            Self::navigate_webview(&controller.get_webview()?, &endpoint)?;
+        }
+        Ok(())
+    }
+
+    fn navigate_webview(webview: &webview2::WebView, endpoint: &str) -> webview2::Result<()> {
+        let source = webview.get_source()?;
+        if source.split('#').next() == endpoint.split('#').next() {
+            // A fragment-only navigation would leave Core connected to the failed server.
+            // Set the new endpoint before reloading, including when the port is unchanged.
+            let fragment = endpoint.split_once('#').map(|(_, hash)| hash).unwrap_or("");
+            webview.execute_script(
+                &format!(
+                    "window.location.hash = {}; window.location.reload();",
+                    json!(fragment)
+                ),
+                |_| Ok(()),
+            )
+        } else {
+            webview.navigate(endpoint)
+        }
+    }
+
+    pub fn set_interface_scale(&self, scale: u64) {
+        if let Some(controller) = self.controller.get() {
+            if let Err(error) = controller.put_zoom_factor(scale as f64 / 100.0) {
+                eprintln!("Cannot set interface scale: {error}");
+            }
+        }
+    }
+
     pub fn fit_to_window(&self, hwnd: Option<HWND>) {
         if let Some(hwnd) = hwnd {
             unsafe {
@@ -110,6 +144,7 @@ impl PartialUi for WebView {
                     settings.put_is_status_bar_enabled(false).ok();
                     settings.put_are_dev_tools_enabled(true).ok();
                     settings.put_are_default_context_menus_enabled(true).ok();
+                    // Web handles zoom shortcuts so they update the saved interface scale.
                     settings.put_is_zoom_control_enabled(false).ok();
                     settings.put_is_built_in_error_page_enabled(false).ok();
                     settings.put_are_host_objects_allowed(false).ok();
@@ -137,13 +172,28 @@ impl PartialUi for WebView {
                         Ok(())
                     })?;
 
-                    if let Some(endpoint) = endpoint.get() {
-                        if webview
-                            .navigate(endpoint.as_str()).is_err() {
-                                tx_web.clone().send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
-                        };
-                    }
+                    let navigation_endpoint = endpoint.clone();
+                    webview.add_navigation_starting(move |_webview, event| {
+                        let uri = event.get_uri()?;
+                        if !same_origin(&trusted_origin(&navigation_endpoint), &uri) {
+                            event.put_cancel(true)?;
+                            if let Some(final_url) = safe_url(&uri) {
+                                if let Err(e) = open::that(final_url) {
+                                    eprintln!("Failed to open URL: {e}");
+                                }
+                            }
+                        }
+                        Ok(())
+                    })?;
+
+                    let navigation_tx = tx_web.clone();
+                    let message_endpoint = endpoint.clone();
                         webview.add_web_message_received(move |_w, msg| {
+                            let source = msg.get_source()?;
+                            if !same_origin(&trusted_origin(&message_endpoint), &source) {
+                                eprintln!("Ignored web message from {source}");
+                                return Ok(());
+                            }
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
                             Ok(())
@@ -181,6 +231,14 @@ impl PartialUi for WebView {
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
                                 window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
+                                document.addEventListener('click', event => {
+                                    const link = event.target.closest('a[href]');
+                                    const href = link && link.getAttribute('href');
+                                    if (href && (href.startsWith('data:application/octet-stream;charset=utf-8;base64,') || /^vlc:/i.test(href))) {
+                                        event.preventDefault();
+                                        window.chrome.webview.postMessage(JSON.stringify({id: 1, args: ['play-external', href]}));
+                                    }
+                                }, true);
                                 }}catch(e){}
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
@@ -230,9 +288,15 @@ impl PartialUi for WebView {
                         })
                         .unwrap();
 
+                        let navigation = endpoint.borrow().clone();
                         controller_clone
                             .set(controller)
                             .expect("Cannot update the controller");
+                        if let Some(endpoint) = navigation {
+                            if WebView::navigate_webview(&webview, &endpoint).is_err() {
+                                navigation_tx.send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
+                            }
+                        }
                         Ok(())
                     })
             });
@@ -302,5 +366,20 @@ impl PartialUi for WebView {
                 }
             }
         }
+    }
+}
+
+fn trusted_origin(endpoint: &RefCell<Option<String>>) -> Option<url::Origin> {
+    endpoint
+        .borrow()
+        .as_deref()
+        .and_then(|endpoint| url::Url::parse(endpoint).ok())
+        .map(|endpoint| endpoint.origin())
+}
+
+fn same_origin(trusted: &Option<url::Origin>, uri: &str) -> bool {
+    match trusted {
+        Some(trusted) => url::Url::parse(uri).is_ok_and(|url| url.origin() == *trusted),
+        None => false,
     }
 }

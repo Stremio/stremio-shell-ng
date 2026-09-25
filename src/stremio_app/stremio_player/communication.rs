@@ -261,27 +261,88 @@ pub enum PropVal {
 pub enum MpvCmd {
     Loadfile,
     Stop,
+    SubAdd,
+    SubRemove,
 }
 stringable!(MpvCmd);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
-#[serde(untagged)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
 pub enum CmdVal {
-    Single((MpvCmd,)),
-    Double(MpvCmd, String),
-    Tripple(MpvCmd, String, String),
-    Quadruple(MpvCmd, String, String, String),
-    Quintuple(MpvCmd, String, String, String, String),
+    Stop,
+    Loadfile(String),
+    LoadfileAt(String, String),
+    SubAdd(String, String, String),
+    SubRemove(String),
+}
+impl CmdVal {
+    pub fn media_transition(&self) -> Option<bool> {
+        match self {
+            Self::Stop => Some(false),
+            Self::Loadfile(_) | Self::LoadfileAt(_, _) => Some(true),
+            Self::SubAdd(_, _, _) | Self::SubRemove(_) => None,
+        }
+    }
+}
+impl TryFrom<Vec<String>> for CmdVal {
+    type Error = String;
+
+    fn try_from(command: Vec<String>) -> Result<Self, Self::Error> {
+        match command.as_slice() {
+            [name] if name == "stop" => Ok(Self::Stop),
+            [name, url] if name == "loadfile" => Ok(Self::Loadfile(url.clone())),
+            [name, url, mode, start]
+                if name == "loadfile" && mode == "replace" && is_safe_start_option(start) =>
+            {
+                Ok(Self::LoadfileAt(url.clone(), start.clone()))
+            }
+            [name, url, mode, index, start]
+                if name == "loadfile"
+                    && mode == "replace"
+                    && index == "-1"
+                    && is_safe_start_option(start) =>
+            {
+                Ok(Self::LoadfileAt(url.clone(), start.clone()))
+            }
+            [name, url, flags, title, language] if name == "sub-add" && flags == "auto" => {
+                Ok(Self::SubAdd(url.clone(), title.clone(), language.clone()))
+            }
+            [name, track_id]
+                if name == "sub-remove" && track_id.parse::<u64>().is_ok_and(|id| id > 0) =>
+            {
+                Ok(Self::SubRemove(track_id.clone()))
+            }
+            _ => Err("unsupported MPV command".to_string()),
+        }
+    }
+}
+fn is_safe_start_option(option: &str) -> bool {
+    option
+        .strip_prefix("start=+")
+        .and_then(|start| start.parse::<f64>().ok())
+        .is_some_and(|start| start.is_finite() && start >= 0.0)
 }
 impl From<CmdVal> for Vec<String> {
     fn from(cmd: CmdVal) -> Vec<String> {
         match cmd {
-            CmdVal::Single(cmd) => vec![cmd.0.to_string()],
-            CmdVal::Double(cmd, arg) => vec![cmd.to_string(), arg],
-            CmdVal::Tripple(cmd, arg1, arg2) => vec![cmd.to_string(), arg1, arg2],
-            CmdVal::Quadruple(cmd, arg1, arg2, arg3) => vec![cmd.to_string(), arg1, arg2, arg3],
-            CmdVal::Quintuple(cmd, arg1, arg2, arg3, arg4) => {
-                vec![cmd.to_string(), arg1, arg2, arg3, arg4]
+            CmdVal::Stop => vec![MpvCmd::Stop.to_string()],
+            CmdVal::Loadfile(url) => vec![MpvCmd::Loadfile.to_string(), url],
+            CmdVal::LoadfileAt(url, start) => vec![
+                MpvCmd::Loadfile.to_string(),
+                url,
+                "replace".to_string(),
+                "-1".to_string(),
+                start,
+            ],
+            CmdVal::SubAdd(url, title, language) => vec![
+                MpvCmd::SubAdd.to_string(),
+                url,
+                "auto".to_string(),
+                title,
+                language,
+            ],
+            CmdVal::SubRemove(track_id) => {
+                vec![MpvCmd::SubRemove.to_string(), track_id]
             }
         }
     }

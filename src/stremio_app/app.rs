@@ -21,7 +21,7 @@ use crate::stremio_app::{
         safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL,
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
-    ipc::{RPCRequest, RPCResponse},
+    ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     mpv_hwnd::find_mpv_child_hwnd,
     pip_window::PipWindow,
     splash::SplashImage,
@@ -35,7 +35,13 @@ use crate::stremio_app::{
 };
 
 use super::discord::DiscordRpc;
-use super::stremio_server::StremioServer;
+use super::stremio_server::{ServerEvent, StremioServer};
+
+pub enum OpenRequest {
+    Input(String),
+    Ready,
+    Reset,
+}
 
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
@@ -54,11 +60,17 @@ pub struct MainWindow {
     pub pip_window: RefCell<PipWindow>,
     pub pip_active: Cell<bool>,
     pub mpv_child_hwnd: Cell<Option<HWND>>,
+    pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
+    pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
+    pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
+    pub local_server_url: Arc<Mutex<Option<String>>>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
+    #[nwg_resource(title: "Choose cache folder", action: nwg::FileDialogAction::OpenDirectory)]
+    pub cache_directory_picker: nwg::FileDialog,
     #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [Self::on_quit(SELF, EVT_DATA)],
@@ -83,6 +95,7 @@ pub struct MainWindow {
     #[nwg_partial(parent: window)]
     pub splash_screen: SplashImage,
     #[nwg_partial(parent: window)]
+    #[nwg_events((notice, OnNotice): [Self::on_server_notice])]
     pub server: StremioServer,
     #[nwg_partial(parent: window)]
     pub player: Player,
@@ -95,6 +108,9 @@ pub struct MainWindow {
     #[nwg_events(OnNotice: [Self::on_toggle_pip_notice] )]
     pub toggle_pip_notice: nwg::Notice,
     #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_set_interface_scale_notice] )]
+    pub set_interface_scale_notice: nwg::Notice,
+    #[nwg_control]
     #[nwg_events(OnNotice: [nwg::stop_thread_dispatch()] )]
     pub quit_notice: nwg::Notice,
     #[nwg_control]
@@ -103,6 +119,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_focus_notice] )]
     pub focus_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
+    pub cache_directory_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -144,16 +163,6 @@ impl MainWindow {
         }
     }
     fn on_init(&self) {
-        let webui_url =
-            if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/') {
-                self.server
-                    .server_url()
-                    .map(|server_url| web_endpoint_with_streaming_server(&server_url))
-                    .unwrap_or_else(|| self.webui_url.clone())
-            } else {
-                self.webui_url.clone()
-            };
-        self.webview.endpoint.set(webui_url).ok();
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
@@ -201,14 +210,36 @@ impl MainWindow {
             .expect("Cannont obtain communication channel for the Web UI");
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
-        let web_tx_arg = web_tx.clone();
+        let web_tx_open = web_tx.clone();
         let web_tx_upd = web_tx.clone();
         let web_rx = web_rx.clone();
 
         let (updater_tx, updater_rx) = flume::unbounded::<String>();
         let updater_tx_web = updater_tx.clone();
 
-        let command_clone = self.command.clone();
+        let (open_sender, open_receiver) = flume::unbounded();
+        let open_sender_web = open_sender.clone();
+        *self.open_media_sender.borrow_mut() = Some(open_sender.clone());
+        let command = self.command.clone();
+        thread::spawn(move || {
+            let mut ready = false;
+            let mut pending = (!command.is_empty()).then_some(command);
+            for request in open_receiver {
+                match request {
+                    OpenRequest::Input(input) => pending = Some(input),
+                    OpenRequest::Ready => ready = true,
+                    OpenRequest::Reset => ready = false,
+                }
+                if ready {
+                    if let Some(input) = pending.take() {
+                        let message = super::open_media::message(&input);
+                        web_tx_open
+                            .send(RPCResponse::response_message(Some(message)))
+                            .ok();
+                    }
+                }
+            }
+        });
 
         // Single application IPC
         let socket_path = Path::new(
@@ -274,9 +305,9 @@ impl MainWindow {
                     stream.read_to_end(&mut buf).ok();
                     if let Ok(s) = str::from_utf8(&buf) {
                         focus_sender.notice();
-                        // ['open-media', url]
-                        web_tx_arg.send(RPCResponse::open_media(s.to_string())).ok();
-                        println!("{s}");
+                        if !s.is_empty() {
+                            open_sender.send(OpenRequest::Input(s.to_string())).ok();
+                        }
                     }
                 }
             });
@@ -292,6 +323,7 @@ impl MainWindow {
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
         let toggle_pip_sender = self.toggle_pip_notice.sender();
+        let set_interface_scale_sender = self.set_interface_scale_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
         let focus_sender = self.focus_notice.sender();
@@ -300,6 +332,10 @@ impl MainWindow {
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
         let requested_pip = self.requested_pip.clone();
+        let requested_cache_directory = self.requested_cache_directory.clone();
+        let cache_directory_sender = self.cache_directory_notice.sender();
+        let local_server_url = self.local_server_url.clone();
+        let requested_interface_scale = self.requested_interface_scale.clone();
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -307,10 +343,51 @@ impl MainWindow {
                 .ok()
                 .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())
             {
+                let local_server_url = local_server_url.lock().unwrap().clone();
                 match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
-                        web_tx_web.send(RPCResponse::get_handshake()).ok();
+                        web_tx_web
+                            .send(RPCResponse::get_handshake(local_server_url.as_deref()))
+                            .ok();
+                    }
+                    Some("pick-cache-directory") => {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<CacheDirectoryRequest>(params.clone()).ok()
+                        }) {
+                            let mut pending = requested_cache_directory.lock().unwrap();
+                            let error = if local_server_url.as_deref()
+                                != Some(request.server_url.as_str())
+                            {
+                                Some("The folder picker is only available for the shell's local server")
+                            } else if pending.is_some() {
+                                Some("A folder picker is already open")
+                            } else {
+                                None
+                            };
+                            if let Some(error) = error {
+                                web_tx_web
+                                    .send(RPCResponse::cache_directory_selected(
+                                        request.request_id,
+                                        Err(error.to_owned()),
+                                    ))
+                                    .ok();
+                            } else {
+                                *pending = Some(request);
+                                cache_directory_sender.notice();
+                            }
+                        }
+                    }
+                    Some("win-set-interface-scale") => {
+                        if let Some(scale) = msg
+                            .get_params()
+                            .and_then(|params| params.get("scale"))
+                            .and_then(|value| value.as_u64())
+                            .filter(|scale| (75..=175).contains(scale))
+                        {
+                            *requested_interface_scale.lock().unwrap() = Some(scale);
+                            set_interface_scale_sender.notice();
+                        }
                     }
                     Some("win-set-visibility") => {
                         if let Some(fullscreen) = msg
@@ -340,10 +417,7 @@ impl MainWindow {
                             .send("check_for_update".to_owned())
                             .expect("Failed to send value to updater channel");
 
-                        let command_ref = command_clone.clone();
-                        if !command_ref.is_empty() {
-                            web_tx_web.send(RPCResponse::open_media(command_ref)).ok();
-                        }
+                        open_sender_web.send(OpenRequest::Ready).ok();
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -371,53 +445,13 @@ impl MainWindow {
                             }
                         }
                     }
-                    // play-external is temporary disabled due to security concerns
-                    // Some("play-external") => {
-                    //     if let Some(arg) = msg.get_params() {
-                    //         let arg = arg.as_str().unwrap_or("");
-                    //         let arg_lc = arg.to_lowercase();
-                    //         const ALLOWED_SCHEMES: &[&str] = &["mpv://", "vlc://", "potplayer://"];
-                    //         let allowed = ALLOWED_SCHEMES.iter().any(|s| arg_lc.starts_with(s));
-                    //         if !arg.is_empty() && allowed {
-                    //             if let Some(stream_url) =
-                    //                 arg_lc.starts_with("mpv://").then(|| &arg[6..])
-                    //             {
-                    //                 // `--` ends mpv's option parsing; the stream URL can't smuggle flags.
-                    //                 let mpv_paths: Vec<String> = vec![
-                    //                     std::env::var("ProgramFiles")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     std::env::var("ProgramFiles(x86)")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     std::env::var("LOCALAPPDATA")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\Programs\\mpv\\mpv.exe")),
-                    //                     std::env::var("LOCALAPPDATA")
-                    //                         .ok()
-                    //                         .map(|v| format!("{v}\\mpv\\mpv.exe")),
-                    //                     Some("mpv.exe".to_string()),
-                    //                 ]
-                    //                 .into_iter()
-                    //                 .flatten()
-                    //                 .collect();
-                    //                 for path in &mpv_paths {
-                    //                     if Command::new(path)
-                    //                         .arg("--")
-                    //                         .arg(stream_url)
-                    //                         .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
-                    //                         .spawn()
-                    //                         .is_ok()
-                    //                     {
-                    //                         break;
-                    //                     }
-                    //                 }
-                    //             } else {
-                    //                 open::that(arg).ok();
-                    //             }
-                    //         }
-                    //     }
-                    // }
+                    Some("play-external") => {
+                        if let Some(arg) = msg.get_params().and_then(|value| value.as_str()) {
+                            if let Err(error) = crate::stremio_app::external_player::play(arg) {
+                                eprintln!("External player request failed: {error}");
+                            }
+                        }
+                    }
                     Some("win-focus") => {
                         focus_sender.notice();
                     }
@@ -508,6 +542,75 @@ impl MainWindow {
                 }
             } // recv
         }); // thread
+        if self.server.development() {
+            self.load_webui(None);
+        } else {
+            self.server.start();
+        }
+    }
+    fn load_webui(&self, server_url: Option<&str>) {
+        *self.local_server_url.lock().unwrap() = server_url
+            .filter(|server_url| {
+                Url::parse(server_url).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+                })
+            })
+            .map(str::to_owned);
+        if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+            sender.send(OpenRequest::Reset).ok();
+        }
+        let endpoint = if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/')
+        {
+            server_url
+                .map(web_endpoint_with_streaming_server)
+                .unwrap_or_else(|| self.webui_url.clone())
+        } else {
+            self.webui_url.clone()
+        };
+        if let Err(error) = self.webview.navigate(endpoint) {
+            self.splash_screen.hide();
+            nwg::modal_error_message(
+                &self.window,
+                "Cannot load Stremio Web UI",
+                &error.to_string(),
+            );
+        }
+    }
+    fn on_server_notice(&self) {
+        for event in self.server.events() {
+            match event {
+                ServerEvent::Ready(endpoint) => self.load_webui(Some(&endpoint)),
+                ServerEvent::Failed(details) => {
+                    *self.local_server_url.lock().unwrap() = None;
+                    if let Some(sender) = self.open_media_sender.borrow().as_ref() {
+                        sender.send(OpenRequest::Reset).ok();
+                    }
+                    self.splash_screen.hide();
+                    self.on_show();
+                    let content = format!(
+                        "Stremio's local streaming server is unavailable.\n\n{details}\n\nChoose Retry to start the server again, or Cancel to exit Stremio."
+                    );
+                    let choice = nwg::modal_message(
+                        &self.window,
+                        &nwg::MessageParams {
+                            title: "Stremio server",
+                            content: &content,
+                            buttons: nwg::MessageButtons::RetryCancel,
+                            icons: nwg::MessageIcons::Error,
+                        },
+                    );
+                    if choice == nwg::MessageChoice::Retry {
+                        if !self.no_splash {
+                            self.splash_screen.show();
+                        }
+                        self.server.start();
+                    } else {
+                        self.on_exit();
+                    }
+                }
+            }
+        }
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
@@ -631,8 +734,46 @@ impl MainWindow {
         self.tray.tray_pip.set_checked(target);
         self.transmit_pip_change(target);
     }
+    fn on_set_interface_scale_notice(&self) {
+        let scale = self.requested_interface_scale.lock().unwrap().take();
+        if let Some(scale) = scale {
+            self.webview.set_interface_scale(scale);
+        }
+    }
     fn on_hide_splash_notice(&self) {
         self.splash_screen.hide();
+    }
+    fn on_cache_directory_notice(&self) {
+        let request = self.requested_cache_directory.lock().unwrap().clone();
+        let Some(request) = request else { return };
+        if let Some(directory) = &request.directory {
+            // An unplugged drive must not prevent choosing a different folder.
+            self.cache_directory_picker
+                .set_default_folder(directory)
+                .ok();
+        }
+        // Show runs a nested message loop; keep the pending request, but no locks or borrows.
+        let result = if self.cache_directory_picker.run(Some(&self.window)) {
+            self.cache_directory_picker
+                .get_selected_item()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    path.into_string()
+                        .map(Some)
+                        .map_err(|_| "The selected folder path is not valid Unicode".to_owned())
+                })
+        } else {
+            Ok(None)
+        };
+        self.requested_cache_directory.lock().unwrap().take();
+        if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
+            web_tx
+                .send(RPCResponse::cache_directory_selected(
+                    request.request_id,
+                    result,
+                ))
+                .ok();
+        }
     }
     fn on_focus_notice(&self) {
         self.window.set_visible(true);

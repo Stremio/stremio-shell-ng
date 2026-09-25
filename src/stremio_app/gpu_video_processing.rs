@@ -10,7 +10,8 @@ use winapi::{
         d3d11::{
             D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11VideoContext,
             ID3D11VideoDevice, ID3D11VideoProcessor, ID3D11VideoProcessorEnumerator,
-            D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
+            D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_FEATURE_D3D11_OPTIONS2,
+            D3D11_FEATURE_DATA_D3D11_OPTIONS2, D3D11_SDK_VERSION,
             D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE, D3D11_VIDEO_PROCESSOR_CONTENT_DESC,
             D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         },
@@ -36,6 +37,7 @@ const NVIDIA_TRUE_HDR_INTERFACE_GUID: GUID = GUID {
 
 static GPU_VIDEO_PROCESSING_SUPPORTED: Lazy<bool> =
     Lazy::new(detect_gpu_video_processing_supported);
+static UNIFIED_MEMORY_ARCHITECTURE: Lazy<bool> = Lazy::new(detect_unified_memory_architecture);
 
 #[repr(C)]
 struct NvidiaRtxSuperResolutionExtension {
@@ -70,32 +72,16 @@ pub fn gpu_video_processing_supported() -> bool {
     *GPU_VIDEO_PROCESSING_SUPPORTED
 }
 
+pub fn unified_memory_architecture() -> bool {
+    *UNIFIED_MEMORY_ARCHITECTURE
+}
+
 fn detect_gpu_video_processing_supported() -> bool {
     unsafe { detect_gpu_video_processing_supported_inner() }
 }
 
 unsafe fn detect_gpu_video_processing_supported_inner() -> bool {
-    let mut device = ptr::null_mut::<ID3D11Device>();
-    let mut device_context = ptr::null_mut::<ID3D11DeviceContext>();
-    if !SUCCEEDED(D3D11CreateDevice(
-        ptr::null_mut(),
-        D3D_DRIVER_TYPE_HARDWARE,
-        ptr::null_mut(),
-        D3D11_CREATE_DEVICE_VIDEO_SUPPORT as UINT,
-        ptr::null(),
-        0,
-        D3D11_SDK_VERSION,
-        &mut device,
-        ptr::null_mut(),
-        &mut device_context,
-    )) {
-        return false;
-    }
-
-    let Some(device) = ComPtr::from_raw(device) else {
-        return false;
-    };
-    let Some(device_context) = ComPtr::from_raw(device_context) else {
+    let Some((device, device_context)) = create_d3d11_device() else {
         return false;
     };
     let Some(video_device) = query_interface::<ID3D11VideoDevice, _>(device.as_ptr()) else {
@@ -146,6 +132,41 @@ unsafe fn detect_gpu_video_processing_supported_inner() -> bool {
     // Intel VSR, so this probe can extend when shell enables that scaling mode.
     nvidia_rtx_super_resolution_supported(&video_context, &video_processor)
         || nvidia_true_hdr_supported(&video_context, &video_processor)
+}
+
+fn detect_unified_memory_architecture() -> bool {
+    unsafe {
+        let Some((device, _)) = create_d3d11_device() else {
+            return false;
+        };
+        let mut options: D3D11_FEATURE_DATA_D3D11_OPTIONS2 = mem::zeroed();
+        SUCCEEDED((*device.as_ptr()).CheckFeatureSupport(
+            D3D11_FEATURE_D3D11_OPTIONS2,
+            &mut options as *mut _ as *mut c_void,
+            mem::size_of::<D3D11_FEATURE_DATA_D3D11_OPTIONS2>() as UINT,
+        )) && options.UnifiedMemoryArchitecture != 0
+    }
+}
+
+unsafe fn create_d3d11_device() -> Option<(ComPtr<ID3D11Device>, ComPtr<ID3D11DeviceContext>)> {
+    let mut device = ptr::null_mut::<ID3D11Device>();
+    let mut device_context = ptr::null_mut::<ID3D11DeviceContext>();
+    if !SUCCEEDED(D3D11CreateDevice(
+        ptr::null_mut(),
+        D3D_DRIVER_TYPE_HARDWARE,
+        ptr::null_mut(),
+        D3D11_CREATE_DEVICE_VIDEO_SUPPORT as UINT,
+        ptr::null(),
+        0,
+        D3D11_SDK_VERSION,
+        &mut device,
+        ptr::null_mut(),
+        &mut device_context,
+    )) {
+        return None;
+    }
+
+    Some((ComPtr::from_raw(device)?, ComPtr::from_raw(device_context)?))
 }
 
 unsafe fn query_interface<T: Interface, U>(source: *mut U) -> Option<ComPtr<T>> {
