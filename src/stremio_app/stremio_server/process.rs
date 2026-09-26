@@ -4,7 +4,10 @@ use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -125,16 +128,33 @@ fn run_server(
         }
     };
 
+    let port_error = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().expect("Piped server stdout");
     let stderr = child.stderr.take().expect("Piped server stderr");
     let stdout_sender = sender.clone();
     let stdout_logs = logs.clone();
-    let stdout_thread =
-        thread::spawn(move || read_output(stdout, true, &stdout_sender, &stdout_logs));
+    let stdout_port_error = port_error.clone();
+    let stdout_thread = thread::spawn(move || {
+        read_output(
+            stdout,
+            true,
+            &stdout_sender,
+            &stdout_logs,
+            &stdout_port_error,
+        )
+    });
     let stderr_sender = sender.clone();
     let stderr_logs = logs.clone();
-    let stderr_thread =
-        thread::spawn(move || read_output(stderr, false, &stderr_sender, &stderr_logs));
+    let stderr_port_error = port_error.clone();
+    let stderr_thread = thread::spawn(move || {
+        read_output(
+            stderr,
+            false,
+            &stderr_sender,
+            &stderr_logs,
+            &stderr_port_error,
+        )
+    });
 
     let mut deadline = Some(Instant::now() + timeout);
     let result = loop {
@@ -148,6 +168,12 @@ fn run_server(
             Ok(None) => {}
         }
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if port_error.load(Ordering::Relaxed) {
+                break Err("The streaming server could not open a local port.\n\n\
+                    Ports 11470-11474 are in use or reserved by another app. \
+                    Close that app or restart your computer, then click Retry."
+                    .to_string());
+            }
             break Err(format!(
                 "The streaming server did not start within {} seconds.",
                 timeout.as_secs()
@@ -184,7 +210,13 @@ fn run_server(
     result
 }
 
-fn read_output(output: impl Read, stdout: bool, sender: &Sender<Message>, logs: &Logs) {
+fn read_output(
+    output: impl Read,
+    stdout: bool,
+    sender: &Sender<Message>,
+    logs: &Logs,
+    port_error: &AtomicBool,
+) {
     for line in BufReader::with_capacity(SRV_BUFFER_SIZE, output).lines() {
         let line = match line {
             Ok(line) => line,
@@ -202,6 +234,9 @@ fn read_output(output: impl Read, stdout: bool, sender: &Sender<Message>, logs: 
             writeln!(std::io::stdout(), "{line}").ok();
         } else {
             writeln!(std::io::stderr(), "{line}").ok();
+            if line.contains("listen EADDRINUSE") || line.contains("listen EACCES") {
+                port_error.store(true, Ordering::Relaxed);
+            }
         }
         {
             let mut logs = logs.lock().unwrap();
@@ -394,11 +429,7 @@ mod tests {
         );
         process.start();
         let error = failed(&process);
-        assert!(
-            error.contains("did not start within 2 seconds"),
-            "{}",
-            error
-        );
+        assert!(error.contains("could not open a local port"), "{}", error);
         assert!(
             error.contains("EACCES") && error.contains("11474"),
             "{}",
