@@ -55,6 +55,11 @@ pub fn web_endpoint_with_streaming_server(server_url: &str) -> String {
 
 pub fn safe_url(uri: &str) -> Option<String> {
     if let Ok(url) = Url::parse(uri) {
+        // Local files belong to the drag and drop handler, never to the browser.
+        // Windows paths such as C:\... parse as a one-letter scheme.
+        if url.scheme() == "file" || url.scheme().len() == 1 {
+            return None;
+        }
         println!("URL is {url}");
         let is_whitelisted = url.host().is_some_and(|host| {
             WHITELISTED_HOSTS
@@ -70,5 +75,63 @@ pub fn safe_url(uri: &str) -> Option<String> {
         Some(final_url)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_file_urls_are_not_opened_externally() {
+        for uri in [
+            "file:///C:/Users/Test%20User/subtitle.srt",
+            "file:///D:/a/_temp/Test%20User/legenda%20%C3%A7%C3%A3o.srt",
+            "FILE:///C:/Users/Test/subtitle.srt",
+            "file://server/share/subtitle.srt",
+        ] {
+            assert_eq!(safe_url(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn windows_paths_are_not_opened_externally() {
+        for uri in [
+            r"C:\Users\Test User\subtitle.srt",
+            "C:/Users/Test User/legenda ção.srt",
+        ] {
+            assert_eq!(safe_url(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn whitelisted_links_open_directly() {
+        assert_eq!(
+            safe_url("https://www.stremio.com/"),
+            Some("https://www.stremio.com/".to_string())
+        );
+    }
+
+    #[test]
+    fn other_links_open_the_warning_page() {
+        assert_eq!(
+            safe_url("https://example.com/page?a=1"),
+            Some(format!(
+                "{WARNING_URL}{}",
+                urlencoding::encode("https://example.com/page?a=1")
+            ))
+        );
+        assert_eq!(
+            safe_url("data:text/plain,hello"),
+            Some(format!(
+                "{WARNING_URL}{}",
+                urlencoding::encode("data:text/plain,hello")
+            ))
+        );
+    }
+
+    #[test]
+    fn invalid_urls_are_not_opened() {
+        assert_eq!(safe_url("not a url"), None);
     }
 }
