@@ -1,7 +1,7 @@
 #![cfg_attr(all(not(test), not(debug_assertions)), windows_subsystem = "windows")]
 #[macro_use]
 extern crate bitflags;
-use std::{io::Write, path::Path, process::exit};
+use std::{cell::RefCell, path::Path, process::exit};
 use url::Url;
 use whoami::username;
 
@@ -9,10 +9,12 @@ use clap::Parser;
 use native_windows_gui::{self as nwg, NativeUi};
 mod stremio_app;
 use crate::stremio_app::{
+    acquire_single_instance,
     constants::{
-        DEV_ENDPOINT, IPC_PATH, SERVER_IPC_KEY, STA_ENDPOINT, STREMIO_SERVER_DEV_MODE, WEB_ENDPOINT,
+        DEV_ENDPOINT, IPC_ATTEMPTS, IPC_PATH, IPC_RETRY_DELAY, SERVER_IPC_KEY, STA_ENDPOINT,
+        STREMIO_SERVER_DEV_MODE, WEB_ENDPOINT,
     },
-    MainWindow, PipeClient,
+    MainWindow, SingleInstance,
 };
 
 #[derive(Parser, Debug)]
@@ -76,17 +78,19 @@ fn main() {
     // Append the username so it works per User
     commands_path.push_str(&username());
     let socket_path = Path::new(&commands_path);
-    if let Ok(mut stream) = PipeClient::connect(socket_path) {
-        let forwarded = stream
-            .write_all(command.as_bytes())
-            .and_then(|_| stream.flush())
-            .is_ok();
-        drop(stream);
-        if forwarded {
-            exit(0);
+    let commands_server = match acquire_single_instance(
+        socket_path,
+        command.as_bytes(),
+        IPC_ATTEMPTS,
+        IPC_RETRY_DELAY,
+    ) {
+        SingleInstance::Forwarded => exit(0),
+        SingleInstance::Primary(server) => Some(server),
+        SingleInstance::Unavailable(error) => {
+            eprintln!("Single application IPC is unavailable; launching without it: {error}");
+            None
         }
-        eprintln!("Failed to forward command to existing Stremio instance; launching new instance");
-    }
+    };
     // END IPC
 
     std::env::set_var(
@@ -105,7 +109,7 @@ fn main() {
     nwg::init().expect("Failed to init Native Windows GUI");
     let _app = MainWindow::build_ui(MainWindow {
         command,
-        commands_path: Some(commands_path),
+        commands_server: RefCell::new(commands_server),
         webui_url,
         no_splash: opt.no_splash,
         dev_tools: opt.development || opt.dev_tools,
