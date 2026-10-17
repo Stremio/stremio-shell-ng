@@ -1,6 +1,6 @@
 use url::Url;
 
-pub const APP_NAME: &str = "Stremio";
+pub const APP_NAME: &str = "Laststream";
 pub const IPC_PATH: &str = "//./pipe/com.stremio5.";
 pub const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
 pub const WEB_ENDPOINT: &str = "https://web.stremio.com/";
