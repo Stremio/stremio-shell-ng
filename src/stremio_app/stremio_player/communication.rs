@@ -200,6 +200,11 @@ pub enum FpProp {
     SubPos,
     Speed,
     Panscan,
+    // Marges de l'image mpv (mini-lecteur : la vidéo est calée dans une vignette de la page).
+    VideoMarginRatioLeft,
+    VideoMarginRatioRight,
+    VideoMarginRatioTop,
+    VideoMarginRatioBottom,
 }
 stringable!(FpProp);
 // Str

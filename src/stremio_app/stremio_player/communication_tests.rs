@@ -1,5 +1,5 @@
 use crate::stremio_app::stremio_player::communication::{
-    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
+    BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
     PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
@@ -174,6 +174,34 @@ fn set_propr_tokens() {
             Token::TupleStructEnd,
         ],
     );
+}
+
+#[test]
+fn set_video_margin_tokens() {
+    for (prop, name) in [
+        (FpProp::VideoMarginRatioLeft, "video-margin-ratio-left"),
+        (FpProp::VideoMarginRatioRight, "video-margin-ratio-right"),
+        (FpProp::VideoMarginRatioTop, "video-margin-ratio-top"),
+        (FpProp::VideoMarginRatioBottom, "video-margin-ratio-bottom"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(InMsg(
+                InMsgFn::MpvSetProp,
+                InMsgArgs::StProp(PropKey::Fp(prop), PropVal::Num(0.25)),
+            ))
+            .unwrap(),
+            serde_json::json!(["mpv-set-prop", [name, 0.25]])
+        );
+        let parsed: InMsg =
+            serde_json::from_value(serde_json::json!(["mpv-set-prop", [name, 0.25]])).unwrap();
+        assert!(matches!(
+            parsed,
+            InMsg(
+                InMsgFn::MpvSetProp,
+                InMsgArgs::StProp(PropKey::Fp(_), PropVal::Num(_))
+            )
+        ));
+    }
 }
 
 #[test]
