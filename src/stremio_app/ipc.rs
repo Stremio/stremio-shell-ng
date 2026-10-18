@@ -134,6 +134,9 @@ impl RPCResponse {
             "isFullscreen": is_full_screen
         }])))
     }
+    pub fn pip_change(pip: bool) -> String {
+        Self::response_message(Some(json!(["win-pip-changed", { "pip": pip }])))
+    }
     pub fn state_change(state: u32) -> String {
         Self::response_message(Some(json!(["win-state-changed" ,{
             "state": state,

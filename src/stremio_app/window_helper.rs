@@ -1,16 +1,21 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{cmp, mem};
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::DWORD;
 use winapi::shared::windef::HWND;
 use winapi::um::dwmapi::DwmSetWindowAttribute;
 use winapi::um::winuser::{
-    GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowRect,
+    GetDpiForWindow, GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowRect,
     IsIconic, IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA, SetWindowPlacement,
     SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO,
     MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
     WINDOWPLACEMENT, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
-    WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_THICKFRAME,
+    WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_THICKFRAME,
 };
+
+/// True while the window is in picture-in-picture. Read by WM_GETMINMAXINFO, which Windows sends
+/// synchronously from inside `SetWindowPos` (the `WindowStyle` RefCell is then already borrowed).
+pub static PIP_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const DWMWA_CAPTION_COLOR: DWORD = 35;
 const DWMWA_TEXT_COLOR: DWORD = 36;
@@ -34,6 +39,8 @@ bitflags! {
 #[derive(Default, Clone)]
 pub struct WindowStyle {
     pub full_screen: bool,
+    /// Picture-in-picture: small borderless always-on-top window (exclusive with `full_screen`).
+    pub pip: bool,
     pub pos: (i32, i32),
     pub size: (i32, i32),
     pub style: i32,
@@ -173,6 +180,64 @@ impl WindowStyle {
             self.full_screen = true;
         }
     }
+    pub fn set_pip(&mut self, hwnd: HWND, pip: bool) {
+        if self.pip == pip {
+            return;
+        }
+        if !pip {
+            let topmost = if self.ex_style as u32 & WS_EX_TOPMOST == WS_EX_TOPMOST {
+                HWND_TOPMOST
+            } else {
+                HWND_NOTOPMOST
+            };
+            PIP_ACTIVE.store(false, Ordering::Relaxed);
+            unsafe {
+                SetWindowLongA(hwnd, GWL_STYLE, self.style);
+                SetWindowLongA(hwnd, GWL_EXSTYLE, self.ex_style);
+            }
+            self.show_window_at(hwnd, topmost);
+            self.pip = false;
+            return;
+        }
+        if self.full_screen {
+            self.set_full_screen(hwnd, false);
+        }
+        unsafe {
+            let mut rect = mem::zeroed();
+            GetWindowRect(hwnd, &mut rect);
+            self.pos = (rect.left, rect.top);
+            self.size = ((rect.right - rect.left), (rect.bottom - rect.top));
+            self.style = GetWindowLongA(hwnd, GWL_STYLE);
+            self.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
+
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut monitor_info: MONITORINFO = mem::zeroed();
+            monitor_info.cbSize = mem::size_of_val(&monitor_info) as u32;
+            if GetMonitorInfoA(monitor, &mut monitor_info) == 0 {
+                println!("GetMonitorInfoA failed");
+                return;
+            }
+            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            let (width, height, margin) = pip_geometry(dpi);
+            let work = monitor_info.rcWork;
+            PIP_ACTIVE.store(true, Ordering::Relaxed);
+            SetWindowLongA(
+                hwnd,
+                GWL_STYLE,
+                self.style & !(WS_CAPTION as i32 | WS_THICKFRAME as i32 | WS_MAXIMIZE as i32),
+            );
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                work.right - width - margin,
+                work.bottom - height - margin,
+                width,
+                height,
+                SWP_FRAMECHANGED,
+            );
+        }
+        self.pip = true;
+    }
     pub fn toggle_topmost(&mut self, hwnd: HWND) {
         let topmost = if unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST
             == WS_EX_TOPMOST
@@ -198,5 +263,21 @@ impl WindowStyle {
         unsafe {
             SetForegroundWindow(hwnd);
         }
+    }
+}
+
+/// Picture-in-picture size and margin in physical pixels: 480x270 and 24 at 96 dpi.
+pub fn pip_geometry(dpi: i32) -> (i32, i32, i32) {
+    (480 * dpi / 96, 270 * dpi / 96, 24 * dpi / 96)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pip_geometry;
+
+    #[test]
+    fn pip_geometry_follows_dpi() {
+        assert_eq!(pip_geometry(96), (480, 270, 24));
+        assert_eq!(pip_geometry(144), (720, 405, 36));
     }
 }

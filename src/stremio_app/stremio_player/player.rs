@@ -91,6 +91,29 @@ enum SubtitleWorkerEvent {
     Wake(Result<(), flume::RecvError>),
 }
 
+/// `Some(n)` when a JSON number is a whole number that fits an int64.
+fn integral_value(value: f64) -> Option<i64> {
+    (value.is_finite() && value.fract() == 0.0 && value.abs() < 9.0e15).then_some(value as i64)
+}
+
+#[cfg(test)]
+mod integral_value_tests {
+    use super::integral_value;
+
+    #[test]
+    fn whole_numbers_become_int64() {
+        assert_eq!(integral_value(2.0), Some(2));
+        assert_eq!(integral_value(-1.0), Some(-1));
+    }
+
+    #[test]
+    fn fractions_and_non_finite_stay_double() {
+        assert_eq!(integral_value(1.5), None);
+        assert_eq!(integral_value(f64::NAN), None);
+        assert_eq!(integral_value(f64::INFINITY), None);
+    }
+}
+
 fn start_next_subtitle(
     mpv: &Mpv,
     queue: &mut VecDeque<SubtitleCommand>,
@@ -860,7 +883,15 @@ fn create_message_thread(
                     set_property(name, value, &mpv);
                 }
                 InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Num(value))) => {
-                    set_property(name, value, &mpv);
+                    // JSON numbers arrive as f64, but libmpv refuses a double for an integer
+                    // property (aid, sid, vid... -> MPV_ERROR_PROPERTY_FORMAT): fall back to int64.
+                    let name = name.to_string();
+                    if mpv.set_property(&name, value).is_err() {
+                        match integral_value(value) {
+                            Some(int) => set_property(&name, int, &mpv),
+                            None => set_property(&name, value, &mpv),
+                        }
+                    }
                 }
                 InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Str(value))) => {
                     let is_vo = name.to_string() == "vo";

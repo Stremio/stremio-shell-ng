@@ -9,7 +9,10 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command},
     str,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::Ordering,
+        Arc, Mutex,
+    },
     thread, time,
 };
 use url::Url;
@@ -18,8 +21,9 @@ use winapi::{
     um::{
         winbase::CREATE_BREAKAWAY_FROM_JOB,
         winuser::{
-            GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
-            WS_CAPTION, WS_EX_TOPMOST,
+            GetWindowLongA, ReleaseCapture, SendMessageW, SetWindowPos, GWL_STYLE, HTCAPTION,
+            SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED, WM_NCLBUTTONDOWN, WS_CAPTION,
+            WS_EX_TOPMOST,
         },
     },
 };
@@ -36,13 +40,19 @@ use crate::stremio_app::{
     stremio_wevbiew::WebView,
     systray::SystemTray,
     updater,
-    window_helper::WindowStyle,
+    window_helper::{WindowStyle, PIP_ACTIVE},
     window_settings::WindowSettings,
     PipeServer,
 };
 
 use super::discord::DiscordRpc;
 use super::stremio_server::{ServerEvent, StremioServer};
+
+/// Window operation asked by the Web UI and run on the UI thread.
+pub enum WindowRequest {
+    Pip(bool),
+    Drag,
+}
 
 pub enum OpenRequest {
     Input(String),
@@ -64,6 +74,7 @@ pub struct MainWindow {
     pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
+    pub requested_window_op: Arc<Mutex<Option<WindowRequest>>>,
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
@@ -111,6 +122,9 @@ pub struct MainWindow {
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
     pub toggle_fullscreen_notice: nwg::Notice,
     #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_window_op_notice] )]
+    pub window_op_notice: nwg::Notice,
+    #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_set_interface_scale_notice] )]
     pub set_interface_scale_notice: nwg::Notice,
     #[nwg_control]
@@ -128,6 +142,16 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
+    fn transmit_pip_change(&self) {
+        if let (Ok(web_channel), Ok(style)) = (
+            self.webview.channel.try_borrow(),
+            self.saved_window_style.try_borrow(),
+        ) {
+            if let Some((web_tx, _)) = web_channel.as_ref() {
+                web_tx.send(RPCResponse::pip_change(style.pip)).ok();
+            }
+        }
+    }
     fn transmit_window_visibility_change(&self) {
         if let (Ok(web_channel), Ok(style)) = (
             self.webview.channel.try_borrow(),
@@ -331,6 +355,8 @@ impl MainWindow {
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
+        let window_op_sender = self.window_op_notice.sender();
+        let requested_window_op = self.requested_window_op.clone();
         let set_interface_scale_sender = self.set_interface_scale_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
@@ -405,6 +431,20 @@ impl MainWindow {
                             *requested_fullscreen.lock().unwrap() = Some(fullscreen);
                             toggle_fullscreen_sender.notice();
                         }
+                    }
+                    Some("win-set-pip") => {
+                        if let Some(pip) = msg
+                            .get_params()
+                            .and_then(|params| params.get("pip"))
+                            .and_then(|value| value.as_bool())
+                        {
+                            *requested_window_op.lock().unwrap() = Some(WindowRequest::Pip(pip));
+                            window_op_sender.notice();
+                        }
+                    }
+                    Some("win-drag") => {
+                        *requested_window_op.lock().unwrap() = Some(WindowRequest::Drag);
+                        window_op_sender.notice();
                     }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
@@ -657,7 +697,11 @@ impl MainWindow {
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
-        data.set_min_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
+        if PIP_ACTIVE.load(Ordering::Relaxed) {
+            data.set_min_size(240, 135);
+        } else {
+            data.set_min_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
+        }
     }
     fn on_paint(&self) {
         if !self.splash_screen.visible() {
@@ -672,7 +716,7 @@ impl MainWindow {
         if self
             .saved_window_style
             .try_borrow()
-            .map(|style| style.full_screen)
+            .map(|style| style.full_screen || style.pip)
             .unwrap_or(false)
         {
             return;
@@ -692,6 +736,9 @@ impl MainWindow {
                     .unwrap()
                     .take()
                     .unwrap_or(!saved_style.full_screen);
+                if target {
+                    saved_style.set_pip(hwnd, false);
+                }
                 saved_style.set_full_screen(hwnd, target);
                 self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
                 self.tray
@@ -699,7 +746,30 @@ impl MainWindow {
                     .set_checked((saved_style.ex_style as u32 & WS_EX_TOPMOST) == WS_EX_TOPMOST);
             }
         }
+        self.transmit_pip_change();
         self.transmit_window_visibility_change();
+    }
+    fn on_window_op_notice(&self) {
+        let request = self.requested_window_op.lock().unwrap().take();
+        let Some(hwnd) = self.window.handle.hwnd() else {
+            return;
+        };
+        match request {
+            Some(WindowRequest::Pip(pip)) => {
+                if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
+                    saved_style.set_pip(hwnd, pip);
+                    self.tray.tray_topmost.set_enabled(!saved_style.pip);
+                }
+                self.transmit_pip_change();
+                self.transmit_window_visibility_change();
+            }
+            Some(WindowRequest::Drag) => unsafe {
+                // Borderless window: let Windows move it as if its caption was dragged.
+                ReleaseCapture();
+                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+            },
+            None => {}
+        }
     }
     fn on_set_interface_scale_notice(&self) {
         let scale = self.requested_interface_scale.lock().unwrap().take();
