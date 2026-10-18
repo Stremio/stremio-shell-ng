@@ -4,6 +4,7 @@
 //! within `READY_TIMEOUT`, is restarted once if it crashes afterwards, and is killed with the
 //! shell through a job object.
 
+use crate::stremio_app::lastaddon_import::{import_developer_data, import_source};
 use crate::stremio_app::{
     constants::{SRV_BUFFER_SIZE, SRV_LOG_SIZE, STREMIO_SERVER_DEV_MODE},
     stremio_server::job::{self, ChildJob},
@@ -330,6 +331,15 @@ fn service_command() -> Result<Command, String> {
         .join("lastaddon");
     fs::create_dir_all(&data_dir)
         .map_err(|error| format!("Impossible de créer {} : {error}", data_dir.display()))?;
+
+    // First run only: the developer data is copied before the service starts, never over existing data.
+    if let Some(source) = import_source() {
+        match import_developer_data(&source, &data_dir) {
+            Ok(true) => println!("import effectué"),
+            Ok(false) => {}
+            Err(error) => eprintln!("import impossible ({:?})", error.kind()),
+        }
+    }
 
     // The secret of the service is kept in its data folder, so it survives updates.
     let mut command = Command::new(directory.join("lastaddon").join("node.exe"));

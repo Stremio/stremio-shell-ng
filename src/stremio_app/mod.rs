@@ -5,6 +5,7 @@ pub mod external_player;
 pub mod gpu_video_processing;
 pub mod ipc;
 pub mod lastaddon;
+pub mod lastaddon_import;
 pub mod stremio_player;
 pub mod stremio_server;
 pub mod stremio_wevbiew;
