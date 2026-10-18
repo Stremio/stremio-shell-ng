@@ -17,6 +17,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     os::windows::process::CommandExt,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -342,25 +343,36 @@ fn service_command() -> Result<Command, String> {
     }
 
     // The secret of the service is kept in its data folder, so it survives updates.
+    Ok(addon_command(&directory, &data_dir, port))
+}
+
+/// Path of the bundled ffmpeg (next to the shell). lastAddon uses it for the seek-bar thumbnails and
+/// disables them on its own when the file is missing.
+fn ffmpeg_path(directory: &Path) -> PathBuf {
+    directory.join("ffmpeg.exe")
+}
+
+/// The command line and environment of the embedded lastAddon, for an installation `directory`.
+fn addon_command(directory: &Path, data_dir: &Path, port: u16) -> Command {
     let mut command = Command::new(directory.join("lastaddon").join("node.exe"));
     command
         .arg(directory.join("lastaddon").join("lastaddon.cjs"))
         .env("PORT", port.to_string())
         .env("LASTADDON_UI_DIR", directory.join("ui"))
-        .env("LASTADDON_DATA_DIR", &data_dir)
+        .env("LASTADDON_DATA_DIR", data_dir)
         .env("LASTADDON_ENV_FILE", data_dir.join(".env"))
+        .env("LASTADDON_FFMPEG", ffmpeg_path(directory))
         .env(
             "LASTADDON_ALLOWED_ORIGINS",
             format!("http://127.0.0.1:{port}"),
         )
         .creation_flags(CREATE_NO_WINDOW);
-    Ok(command)
+    command
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -386,6 +398,19 @@ mod tests {
             .events
             .recv_timeout(TEST_TIMEOUT)
             .expect("Expected an addon event")
+    }
+
+    #[test]
+    fn passes_the_bundled_ffmpeg_next_to_the_shell() {
+        let directory = Path::new(r"C:\Laststream");
+        let command = addon_command(directory, Path::new(r"C:\Data"), 7000);
+        let value = command
+            .get_envs()
+            .find(|(name, _)| *name == "LASTADDON_FFMPEG")
+            .and_then(|(_, value)| value)
+            .expect("LASTADDON_FFMPEG must be set");
+        assert_eq!(value, Path::new(r"C:\Laststream\ffmpeg.exe").as_os_str());
+        assert_eq!(ffmpeg_path(directory), directory.join("ffmpeg.exe"));
     }
 
     #[test]
