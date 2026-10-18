@@ -30,6 +30,7 @@ use crate::stremio_app::{
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
+    lastaddon::{AddonEvent, LastAddon},
     splash::SplashImage,
     stremio_player::Player,
     stremio_wevbiew::WebView,
@@ -53,7 +54,8 @@ pub enum OpenRequest {
 pub struct MainWindow {
     pub command: String,
     pub commands_path: Option<String>,
-    pub webui_url: String,
+    /// `None` loads the Laststream app served by the local service.
+    pub webui_url: Option<String>,
     pub no_splash: bool,
     pub dev_tools: bool,
     pub start_hidden: bool,
@@ -98,6 +100,9 @@ pub struct MainWindow {
     #[nwg_partial(parent: window)]
     #[nwg_events((notice, OnNotice): [Self::on_server_notice])]
     pub server: StremioServer,
+    #[nwg_partial(parent: window)]
+    #[nwg_events((notice, OnNotice): [Self::on_addon_notice])]
+    pub addon: LastAddon,
     #[nwg_partial(parent: window)]
     pub player: Player,
     #[nwg_partial(parent: window)]
@@ -536,6 +541,7 @@ impl MainWindow {
                 }
             } // recv
         }); // thread
+        self.addon.start();
         if self.server.development() {
             self.load_webui(None);
         } else {
@@ -551,17 +557,23 @@ impl MainWindow {
                 })
             })
             .map(str::to_owned);
+        // With the default WebUI, the page is loaded when the local Laststream service is ready.
+        let Some(webui_url) = self.webui_url.as_deref() else {
+            return;
+        };
+        let endpoint = if webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/') {
+            server_url
+                .map(web_endpoint_with_streaming_server)
+                .unwrap_or_else(|| webui_url.to_owned())
+        } else {
+            webui_url.to_owned()
+        };
+        self.navigate_webui(endpoint);
+    }
+    fn navigate_webui(&self, endpoint: String) {
         if let Some(sender) = self.open_media_sender.borrow().as_ref() {
             sender.send(OpenRequest::Reset).ok();
         }
-        let endpoint = if self.webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/')
-        {
-            server_url
-                .map(web_endpoint_with_streaming_server)
-                .unwrap_or_else(|| self.webui_url.clone())
-        } else {
-            self.webui_url.clone()
-        };
         if let Err(error) = self.webview.navigate(endpoint) {
             self.splash_screen.hide();
             nwg::modal_error_message(
@@ -569,6 +581,43 @@ impl MainWindow {
                 "Cannot load Stremio Web UI",
                 &error.to_string(),
             );
+        }
+    }
+    fn on_addon_notice(&self) {
+        for event in self.addon.events() {
+            match event {
+                AddonEvent::Ready(url) => {
+                    // The Laststream UI does not send app-ready, so the splash ends with the navigation.
+                    if self.webui_url.is_none() {
+                        self.splash_screen.hide();
+                        self.navigate_webui(url);
+                    }
+                }
+                AddonEvent::Failed(details) => {
+                    self.splash_screen.hide();
+                    self.on_show();
+                    let content = format!(
+                        "Le service local de Laststream est indisponible.\n\n{details}\n\nChoisissez Réessayer pour le relancer, ou Annuler pour quitter Laststream."
+                    );
+                    let choice = nwg::modal_message(
+                        &self.window,
+                        &nwg::MessageParams {
+                            title: APP_NAME,
+                            content: &content,
+                            buttons: nwg::MessageButtons::RetryCancel,
+                            icons: nwg::MessageIcons::Error,
+                        },
+                    );
+                    if choice == nwg::MessageChoice::Retry {
+                        if !self.no_splash {
+                            self.splash_screen.show();
+                        }
+                        self.addon.start();
+                    } else {
+                        self.on_exit();
+                    }
+                }
+            }
         }
     }
     fn on_server_notice(&self) {

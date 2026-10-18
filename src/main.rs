@@ -35,8 +35,11 @@ struct Opt {
     development: bool,
     #[clap(long, help = "Shortcut for --webui-url=https://staging.strem.io/")]
     staging: bool,
-    #[clap(long, default_value = WEB_ENDPOINT, help = "Override the WebUI URL")]
-    webui_url: String,
+    #[clap(
+        long,
+        help = "Override the WebUI URL (default: the Laststream app served by the local service)"
+    )]
+    webui_url: Option<String>,
     #[clap(long, help = "Ovveride autoupdater endpoint")]
     autoupdater_endpoint: Option<Url>,
     #[clap(long, help = "Forces reinstalling current version")]
@@ -94,12 +97,12 @@ fn main() {
         if opt.development { "true" } else { "false" },
     );
 
-    let webui_url = if opt.development && opt.webui_url == WEB_ENDPOINT {
-        DEV_ENDPOINT.to_string()
-    } else if opt.staging && opt.webui_url == WEB_ENDPOINT {
-        STA_ENDPOINT.to_string()
-    } else {
-        opt.webui_url
+    // None keeps the Laststream app served by the local service.
+    let webui_url = match opt.webui_url.as_deref() {
+        Some(url) if url != WEB_ENDPOINT => Some(url.to_string()),
+        _ if opt.development => Some(DEV_ENDPOINT.to_string()),
+        _ if opt.staging => Some(STA_ENDPOINT.to_string()),
+        explicit => explicit.map(str::to_string),
     };
 
     nwg::init().expect("Failed to init Native Windows GUI");
