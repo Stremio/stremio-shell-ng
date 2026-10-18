@@ -153,6 +153,10 @@ impl RPCResponse {
     pub fn media_key(action: &str) -> String {
         Self::response_message(Some(json!(["media-key", action])))
     }
+    /// Réponse du pont HTTP natif (voir native_http.rs) : `native-http-response` avec l'identifiant de la requête.
+    pub fn native_http_response(payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!(["native-http-response", payload])))
+    }
     pub fn cache_directory_selected(
         request_id: u64,
         result: Result<Option<String>, String>,

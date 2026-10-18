@@ -419,6 +419,18 @@ impl MainWindow {
                             }
                         }
                     }
+                    // Pont HTTP vers les débrideurs (AllDebrid, TorBox), limité à leurs domaines : requête depuis cet appareil.
+                    Some("native-http") => {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<crate::stremio_app::native_http::NativeHttpRequest>(params.clone()).ok()
+                        }) {
+                            let reply_tx = web_tx_web.clone();
+                            thread::spawn(move || {
+                                let payload = crate::stremio_app::native_http::run(&request);
+                                reply_tx.send(RPCResponse::native_http_response(payload)).ok();
+                            });
+                        }
+                    }
                     Some("win-set-interface-scale") => {
                         if let Some(scale) = msg
                             .get_params()
