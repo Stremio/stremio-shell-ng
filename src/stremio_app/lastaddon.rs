@@ -31,6 +31,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const FIRST_PORT: u16 = 7000;
 const PORT_CANDIDATES: u16 = 100;
 const MAX_RESTARTS: u32 = 1;
+/// Permanent service (scheduled task) the shell reuses instead of launching its own lastAddon.
+const SERVICE_URL: &str = "http://127.0.0.1:7000";
+const PROBE_ATTEMPTS: u32 = 3;
+const PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+const PROBE_RETRY_DELAY: Duration = Duration::from_millis(900);
 
 type Logs = Arc<Mutex<VecDeque<String>>>;
 
@@ -93,9 +98,14 @@ impl PartialUi for LastAddon {
 
         if env::var(STREMIO_SERVER_DEV_MODE).as_deref() != Ok("true") {
             let sender = data.notice.sender();
-            data.process = Some(AddonProcess::new(
+            data.process = Some(AddonProcess::with_probe(
                 service_command,
                 READY_TIMEOUT,
+                || {
+                    existing_service(PROBE_ATTEMPTS, PROBE_RETRY_DELAY, || {
+                        fetch_health(SERVICE_URL, PROBE_TIMEOUT)
+                    })
+                },
                 move || {
                     sender.notice();
                 },
@@ -111,9 +121,21 @@ pub struct AddonProcess {
 }
 
 impl AddonProcess {
+    #[cfg(test)]
     fn new(
+        factory: impl FnMut() -> Result<Command, String> + Send + 'static,
+        timeout: Duration,
+        notify: impl Fn() + Send + 'static,
+    ) -> Self {
+        Self::with_probe(factory, timeout, || false, notify)
+    }
+
+    /// `probe` tells whether a permanent lastAddon already answers; then none is launched and
+    /// the shell only reuses it (it is never stopped by the shell).
+    fn with_probe(
         mut factory: impl FnMut() -> Result<Command, String> + Send + 'static,
         timeout: Duration,
+        probe: impl Fn() -> bool + Send + 'static,
         notify: impl Fn() + Send + 'static,
     ) -> Self {
         let (control, control_rx) = flume::unbounded();
@@ -126,6 +148,12 @@ impl AddonProcess {
             };
             // Nothing runs before the shell asks for it; Retry after a failure sends Start again.
             while let Ok(Control::Start) = control_rx.recv() {
+                if probe() {
+                    emit(AddonEvent::Ready(format!("{SERVICE_URL}/")));
+                    // Nothing to supervise or kill: wait for the shell to close.
+                    while let Ok(Control::Start) = control_rx.recv() {}
+                    return;
+                }
                 let mut restarts = 0;
                 loop {
                     match run_attempt(&mut factory, timeout, &control_rx, &emit) {
@@ -304,6 +332,46 @@ fn parse_ready(line: &str) -> Option<u16> {
         .filter(|port| *port != 0)
 }
 
+/// True when `body` is the `/health` answer of lastAddon: a JSON object with `"ok": true`.
+fn is_addon_health(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
+        == Some(true)
+}
+
+/// Body of `GET {base}/health` when it answers 2xx within `timeout`.
+fn fetch_health(base: &str, timeout: Duration) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .no_proxy()
+        .build()
+        .ok()?;
+    let response = client.get(format!("{base}/health")).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.text().ok()
+}
+
+/// Polls `fetch` up to `attempts` times (waiting `delay` between them, so a service that starts
+/// at logon has time to come up) and tells whether a lastAddon answered.
+fn existing_service(
+    attempts: u32,
+    delay: Duration,
+    mut fetch: impl FnMut() -> Option<String>,
+) -> bool {
+    for attempt in 0..attempts {
+        if attempt > 0 {
+            thread::sleep(delay);
+        }
+        if fetch().is_some_and(|body| is_addon_health(&body)) {
+            return true;
+        }
+    }
+    false
+}
+
 fn free_port_from(first: u16) -> Option<u16> {
     (first..first.saturating_add(PORT_CANDIDATES)).find(|port| is_free(*port))
 }
@@ -411,6 +479,87 @@ mod tests {
             .expect("LASTADDON_FFMPEG must be set");
         assert_eq!(value, Path::new(r"C:\Laststream\ffmpeg.exe").as_os_str());
         assert_eq!(ffmpeg_path(directory), directory.join("ffmpeg.exe"));
+    }
+
+    #[test]
+    fn recognises_only_the_lastaddon_health_answer() {
+        assert!(is_addon_health(r#"{"ok":true}"#));
+        assert!(is_addon_health(r#"{ "ok": true, "x": 1 }"#));
+        assert!(!is_addon_health(r#"{"ok":false}"#));
+        assert!(!is_addon_health(r#"{"status":"up"}"#));
+        assert!(!is_addon_health("OK"));
+        assert!(!is_addon_health("<html>ok</html>"));
+        assert!(!is_addon_health(""));
+    }
+
+    #[test]
+    fn reuses_the_service_when_it_answers_even_late() {
+        let mut calls = 0;
+        let found = existing_service(3, Duration::ZERO, || {
+            calls += 1;
+            (calls == 2).then(|| r#"{"ok":true}"#.to_string())
+        });
+        assert!(found);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn launches_its_own_when_nothing_answers() {
+        let mut calls = 0;
+        let found = existing_service(3, Duration::ZERO, || {
+            calls += 1;
+            None
+        });
+        assert!(!found);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn launches_its_own_when_another_service_answers() {
+        assert!(!existing_service(2, Duration::ZERO, || Some(
+            "<html>other</html>".to_string()
+        )));
+        assert!(!existing_service(2, Duration::ZERO, || Some(
+            r#"{"ok":false}"#.to_string()
+        )));
+    }
+
+    #[test]
+    fn fetches_health_from_a_real_listener_and_ignores_a_closed_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("Bind a test port");
+        let port = listener.local_addr().expect("Address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("Accept");
+            let mut buffer = [0u8; 1024];
+            stream.read(&mut buffer).ok();
+            let body = r#"{"ok":true}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .ok();
+        });
+        let base = format!("http://127.0.0.1:{port}");
+        let body = fetch_health(&base, Duration::from_secs(3)).expect("Health answer");
+        assert!(is_addon_health(&body));
+        server.join().ok();
+        assert_eq!(fetch_health(&base, Duration::from_millis(300)), None);
+    }
+
+    #[test]
+    fn reports_ready_without_launching_when_the_service_exists() {
+        let process = AddonProcess::with_probe(
+            || panic!("The embedded lastAddon must not be launched"),
+            TEST_TIMEOUT,
+            || true,
+            || {},
+        );
+        process.start();
+        assert_eq!(
+            next_event(&process),
+            AddonEvent::Ready("http://127.0.0.1:7000/".to_string())
+        );
     }
 
     #[test]
