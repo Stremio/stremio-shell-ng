@@ -182,6 +182,8 @@ pub enum IntProp {
     Aid,
     Vid,
     Sid,
+    // Second sous-titre affiché en même temps que `sid` (mode apprentissage de langue).
+    SecondarySid,
 }
 stringable!(IntProp);
 // Fp

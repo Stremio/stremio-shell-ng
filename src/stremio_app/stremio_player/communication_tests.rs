@@ -1,6 +1,6 @@
 use crate::stremio_app::stremio_player::communication::{
     BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
-    PropKey, PropVal,
+    IntProp, PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
@@ -202,6 +202,23 @@ fn set_video_margin_tokens() {
             )
         ));
     }
+}
+
+#[test]
+fn set_secondary_sid_tokens() {
+    for value in [serde_json::json!(3.0), serde_json::json!("no")] {
+        let msg = serde_json::json!(["mpv-set-prop", ["secondary-sid", value]]);
+        let parsed: InMsg = serde_json::from_value(msg.clone()).unwrap();
+        assert!(matches!(
+            parsed,
+            InMsg(
+                InMsgFn::MpvSetProp,
+                InMsgArgs::StProp(PropKey::Int(IntProp::SecondarySid), _)
+            )
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), msg);
+    }
+    assert_eq!(IntProp::SecondarySid.to_string(), "secondary-sid");
 }
 
 #[test]
