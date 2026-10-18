@@ -6,6 +6,7 @@ pub mod gpu_video_processing;
 pub mod ipc;
 pub mod lastaddon;
 pub mod lastaddon_import;
+pub mod addon_http;
 pub mod native_http;
 pub mod shell_config;
 pub mod stremio_player;
