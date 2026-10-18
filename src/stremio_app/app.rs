@@ -35,6 +35,7 @@ use crate::stremio_app::{
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
+    shell_config,
     splash::SplashImage,
     stremio_player::Player,
     stremio_wevbiew::WebView,
@@ -139,6 +140,13 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
     pub cache_directory_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_remote_probe_notice])]
+    pub remote_probe_notice: nwg::Notice,
+    /// Result of the last probe of the remote service (`None` while it runs).
+    pub remote_probe_result: Arc<Mutex<Option<bool>>>,
+    /// Page of the remote service to load, from `shell.json` (`None`: local service or explicit URL).
+    pub remote_url: RefCell<Option<String>>,
 }
 
 impl MainWindow {
@@ -581,11 +589,64 @@ impl MainWindow {
                 }
             } // recv
         }); // thread
-        self.addon.start();
-        if self.server.development() {
+        let plan = shell_config::load().plan(self.webui_url.is_some());
+        if plan.local_addon {
+            self.addon.start();
+        }
+        if let Some(url) = plan.remote_url {
+            // Public service: no local process; the page is loaded once the probe succeeds.
+            *self.remote_url.borrow_mut() = Some(url);
+            self.probe_remote();
+        } else if self.server.development() {
             self.load_webui(None);
-        } else {
+        } else if plan.streaming_server {
             self.server.start();
+        }
+    }
+    /// Probes the remote service in a thread (short timeout) so the splash screen stays responsive.
+    fn probe_remote(&self) {
+        let Some(url) = self.remote_url.borrow().clone() else {
+            return;
+        };
+        *self.remote_probe_result.lock().unwrap() = None;
+        let result = self.remote_probe_result.clone();
+        let sender = self.remote_probe_notice.sender();
+        thread::spawn(move || {
+            let reachable = shell_config::is_reachable(&url, shell_config::PROBE_TIMEOUT);
+            *result.lock().unwrap() = Some(reachable);
+            sender.notice();
+        });
+    }
+    fn on_remote_probe_notice(&self) {
+        let Some(url) = self.remote_url.borrow().clone() else {
+            return;
+        };
+        if self.remote_probe_result.lock().unwrap().take() == Some(true) {
+            self.splash_screen.hide();
+            self.navigate_webui(url);
+            return;
+        }
+        self.splash_screen.hide();
+        self.on_show();
+        let content = format!(
+            "Impossible de joindre le service Laststream ({url}).\n\nVérifiez votre connexion Internet, puis choisissez Réessayer, ou Annuler pour quitter Laststream."
+        );
+        let choice = nwg::modal_message(
+            &self.window,
+            &nwg::MessageParams {
+                title: APP_NAME,
+                content: &content,
+                buttons: nwg::MessageButtons::RetryCancel,
+                icons: nwg::MessageIcons::Error,
+            },
+        );
+        if choice == nwg::MessageChoice::Retry {
+            if !self.no_splash {
+                self.splash_screen.show();
+            }
+            self.probe_remote();
+        } else {
+            self.on_exit();
         }
     }
     fn load_webui(&self, server_url: Option<&str>) {

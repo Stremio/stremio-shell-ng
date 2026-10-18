@@ -383,3 +383,36 @@ fn same_origin(trusted: &Option<url::Origin>, uri: &str) -> bool {
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stremio_app::shell_config::PUBLIC_URL;
+
+    fn trusted(endpoint: &str) -> Option<url::Origin> {
+        trusted_origin(&RefCell::new(Some(endpoint.to_owned())))
+    }
+
+    #[test]
+    fn public_mode_accepts_messages_only_from_the_public_origin() {
+        let origin = trusted(PUBLIC_URL);
+        assert!(same_origin(&origin, "https://laststream.gtux-prog.workers.dev/#/player"));
+        assert!(!same_origin(&origin, "http://127.0.0.1:7000/"));
+        assert!(!same_origin(&origin, "https://evil.workers.dev/"));
+        assert!(!same_origin(&origin, "http://laststream.gtux-prog.workers.dev/"));
+        assert!(!same_origin(&origin, "https://laststream.gtux-prog.workers.dev.evil.com/"));
+    }
+
+    #[test]
+    fn local_mode_accepts_only_the_local_origin() {
+        let origin = trusted("http://127.0.0.1:7000/");
+        assert!(same_origin(&origin, "http://127.0.0.1:7000/#/"));
+        assert!(!same_origin(&origin, "http://127.0.0.1:7001/"));
+        assert!(!same_origin(&origin, PUBLIC_URL));
+    }
+
+    #[test]
+    fn nothing_is_accepted_before_the_first_navigation() {
+        assert!(!same_origin(&trusted_origin(&RefCell::new(None)), PUBLIC_URL));
+    }
+}
