@@ -443,6 +443,18 @@ impl MainWindow {
                             });
                         }
                     }
+                    // Pont HTTP « playlist de box TV » (Freebox ou URL M3U de l'utilisateur, LAN autorisé, voir box_playlist.rs). Rien n'est journalisé.
+                    Some("native-box-playlist") => {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<crate::stremio_app::box_playlist::BoxPlaylistRequest>(params.clone()).ok()
+                        }) {
+                            let reply_tx = web_tx_web.clone();
+                            thread::spawn(move || {
+                                let payload = crate::stremio_app::box_playlist::run(&request);
+                                reply_tx.send(RPCResponse::native_http_response(payload)).ok();
+                            });
+                        }
+                    }
                     Some("win-set-interface-scale") => {
                         if let Some(scale) = msg
                             .get_params()
