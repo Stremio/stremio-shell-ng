@@ -529,16 +529,30 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("Bind a test port");
         let port = listener.local_addr().expect("Address").port();
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("Accept");
-            let mut buffer = [0u8; 1024];
-            stream.read(&mut buffer).ok();
-            let body = r#"{"ok":true}"#;
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .ok();
+            // `is_free` in other tests connects to nearby ports and closes at once: such a probe
+            // carries no request, so it is skipped instead of using up the one answer served here.
+            for stream in listener.incoming() {
+                let mut stream = stream.expect("Accept");
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut buffer) {
+                        Ok(read) if read > 0 => request.extend_from_slice(&buffer[..read]),
+                        _ => break,
+                    }
+                }
+                if request.is_empty() {
+                    continue;
+                }
+                let body = r#"{"ok":true}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .ok();
+                break;
+            }
         });
         let base = format!("http://127.0.0.1:{port}");
         let body = fetch_health(&base, Duration::from_secs(3)).expect("Health answer");
