@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::stremio_app::ipc::RPCResponse;
-use crate::stremio_app::addon_http::{public_named_url, resolve_public, system_resolver};
+use crate::stremio_app::addon_http::{public_named_url, resolve_public_checked, system_resolver};
 use crate::stremio_app::native_http::{host_allowed, parse_allowed_url, RESPONSE_HEADERS};
 use std::net::IpAddr;
 use std::time::Instant;
@@ -242,9 +242,9 @@ fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(
             .https_only(true);
         if !host_allowed(&host) {
             // Lien direct : toutes les adresses doivent être publiques, la connexion est épinglée dessus (pas de second DNS exploitable).
-            match resolve_public(&host, resolver) {
-                Some(addrs) => builder = builder.resolve_to_addrs(&host, &addrs),
-                None => return error_reply(id, "host_not_allowed"),
+            match resolve_public_checked(&host, resolver) {
+                Ok(addrs) => builder = builder.no_proxy().resolve_to_addrs(&host, &addrs),
+                Err(code) => return error_reply(id, code),
             }
         }
         let client = match builder.build() {
@@ -448,7 +448,8 @@ mod tests {
         // Une seule adresse privée parmi des publiques suffit à refuser (rebinding).
         let mixed = |_: &str| vec!["93.184.216.34".parse().unwrap(), "10.0.0.1".parse().unwrap()];
         assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &mixed)["error"], "host_not_allowed");
-        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![])["error"], "host_not_allowed");
+        // Échec de résolution (DNS indisponible) : `network`, pas un refus.
+        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![])["error"], "network");
     }
 
     #[test]

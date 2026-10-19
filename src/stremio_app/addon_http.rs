@@ -143,15 +143,31 @@ pub fn redirect_target(base: &url::Url, location: &str) -> Option<url::Url> {
 
 /// Résout l'hôte et refuse si UNE adresse n'est pas publique. Renvoie les adresses à épingler.
 pub fn resolve_public(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Option<Vec<SocketAddr>> {
-    let ips = resolver(host);
-    if ips.is_empty() || !ips.iter().all(|ip| ip_is_public(*ip)) {
-        return None;
-    }
-    Some(ips.into_iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+    resolve_public_checked(host, resolver).ok()
 }
 
+/// Comme `resolve_public`, mais distingue un échec de résolution (`network` : aucune adresse, DNS indisponible) d'un refus
+/// (`host_not_allowed` : au moins une adresse non publique).
+pub fn resolve_public_checked(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+    let ips = resolver(host);
+    if ips.is_empty() {
+        return Err("network");
+    }
+    if !ips.iter().all(|ip| ip_is_public(*ip)) {
+        return Err("host_not_allowed");
+    }
+    Ok(ips.into_iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+}
+
+/// Résolution système ; un échec (liste vide) est retenté une fois avant d'abandonner.
 pub fn system_resolver(host: &str) -> Vec<IpAddr> {
-    (host, 443u16).to_socket_addrs().map(|it| it.map(|a| a.ip()).collect()).unwrap_or_default()
+    for _ in 0..2 {
+        let ips: Vec<IpAddr> = (host, 443u16).to_socket_addrs().map(|it| it.map(|a| a.ip()).collect()).unwrap_or_default();
+        if !ips.is_empty() {
+            return ips;
+        }
+    }
+    Vec::new()
 }
 
 /// Lit au plus `max` octets ; `Err(true)` si la source en contient davantage, `Err(false)` en cas d'erreur de lecture.
