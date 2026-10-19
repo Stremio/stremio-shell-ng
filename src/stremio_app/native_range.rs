@@ -1,6 +1,8 @@
 //! Pont de lecture par plages « native-range » : lit depuis cet appareil un fichier débridé par tranches `Range`, sans tout charger d'un coup.
-//! Même allowlist d'hôtes que `native-http` (débrideurs et leurs CDN, HTTPS seulement, voir native_http.rs). GET uniquement, en-tête
-//! `Range: bytes=a-b` obligatoire, plage <= 8 Mo, 3 redirections au plus (chaque saut revalidé). Un 200 n'est accepté que si le corps
+//! Deux familles d'hôtes, HTTPS:443 seulement, sans identifiants : les débrideurs et leurs CDN (allowlist de native_http.rs) et les liens
+//! directs d'addon, sur un hôte nominatif (pas d'IP littérale) qui ne résout que vers des adresses publiques (vérifié après résolution DNS,
+//! connexion épinglée sur ces adresses : ni LAN ni serveur local). GET uniquement, en-tête
+//! `Range: bytes=a-b` obligatoire, plage <= 8 Mo, 3 redirections au plus (chaque saut revalidé selon les mêmes règles). Un 200 n'est accepté que si le corps
 //! complet, depuis l'octet 0, tient dans la plage demandée ; sinon `range_unsupported`.
 //!
 //! Protocole (signaux vers la page, ids de requête fournis par la page) :
@@ -25,7 +27,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::stremio_app::ipc::RPCResponse;
-use crate::stremio_app::native_http::{parse_allowed_url, RESPONSE_HEADERS};
+use crate::stremio_app::addon_http::{public_named_url, resolve_public, system_resolver};
+use crate::stremio_app::native_http::{host_allowed, parse_allowed_url, RESPONSE_HEADERS};
+use std::net::IpAddr;
+use std::time::Instant;
 
 const VERSION: u32 = 1;
 /// Taille maximale d'un morceau une fois encodé en base64.
@@ -37,6 +42,8 @@ pub const MAX_RANGE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 20_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_REDIRECTS: usize = 3;
+/// Longueur maximale d'un lien direct d'addon (les liens signés sont longs).
+const MAX_DIRECT_URL_LEN: usize = 4096;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,9 +98,15 @@ fn requested_range(headers: Option<&HashMap<String, String>>) -> Result<ByteRang
     parse_range(raw).ok_or("bad_range")
 }
 
+/// Lien lisible par le pont : hôte de débrideur (allowlist) ou lien direct d'addon (hôte nominatif en https:443 ; la résolution
+/// DNS publique est vérifiée à la connexion, voir `run_with`).
+pub fn parse_source_url(raw: &str) -> Option<url::Url> {
+    parse_allowed_url(raw).or_else(|| public_named_url(raw, MAX_DIRECT_URL_LEN))
+}
+
 /// Une redirection n'est suivie que vers une URL autorisée : mêmes règles que la requête initiale.
 pub fn redirect_allowed(url: &url::Url) -> bool {
-    parse_allowed_url(url.as_str()).is_some()
+    parse_source_url(url.as_str()).is_some()
 }
 
 /// Décide si la réponse peut servir la plage. 206 : oui. 200 : seulement si le corps complet (depuis l'octet 0) tient dans la plage.
@@ -193,11 +206,15 @@ fn deliver<R: Read>(
 
 /// Exécute la requête (bloquant : à lancer dans un fil). `sink` reçoit les `native-range-chunk` ; renvoie la charge finale.
 pub fn run(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(Value) -> bool) -> Value {
+    run_with(req, cancel, sink, &system_resolver)
+}
+
+fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(Value) -> bool, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Value {
     let id = req.id;
     if !req.method.as_deref().unwrap_or("GET").eq_ignore_ascii_case("GET") {
         return error_reply(id, "method_not_allowed");
     }
-    let url = match parse_allowed_url(&req.url) {
+    let mut url = match parse_source_url(&req.url) {
         Some(url) => url,
         None => return error_reply(id, "host_not_allowed"),
     };
@@ -209,55 +226,75 @@ pub fn run(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(V
         return error_reply(id, "too_large");
     }
     let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
-    // Redirections suivies seulement vers un hôte autorisé (3 au plus), comme native-http.
-    let policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= MAX_REDIRECTS || !redirect_allowed(attempt.url()) {
-            attempt.stop()
-        } else {
-            attempt.follow()
+    let started = Instant::now();
+    // Redirections suivies à la main (3 au plus) : chaque saut est revalidé et, hors débrideur, résolu vers des adresses publiques.
+    for hop in 0..=MAX_REDIRECTS {
+        let remaining = match timeout.checked_sub(started.elapsed()) {
+            Some(r) if !r.is_zero() => r,
+            _ => return error_reply(id, "timeout"),
+        };
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        // Pas de Referer automatique (aucune fuite d'URL d'origine), HTTPS obligatoire, aucun suivi automatique.
+        let mut builder = reqwest::blocking::Client::builder()
+            .timeout(remaining)
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false)
+            .https_only(true);
+        if !host_allowed(&host) {
+            // Lien direct : toutes les adresses doivent être publiques, la connexion est épinglée dessus (pas de second DNS exploitable).
+            match resolve_public(&host, resolver) {
+                Some(addrs) => builder = builder.resolve_to_addrs(&host, &addrs),
+                None => return error_reply(id, "host_not_allowed"),
+            }
         }
-    });
-    // Pas de Referer automatique (aucune fuite d'URL d'origine), et HTTPS obligatoire y compris sur les redirections.
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .redirect(policy)
-        .referer(false)
-        .https_only(true)
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return error_reply(id, "client"),
-    };
-    let response = match client
-        .get(url)
-        .header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end))
-        .send()
-    {
-        Ok(r) => r,
-        Err(e) if e.is_timeout() => return error_reply(id, "timeout"),
-        Err(_) => return error_reply(id, "network"),
-    };
-    let status = response.status().as_u16();
-    if (300..400).contains(&status) {
-        return error_with_status(id, "redirect_not_allowed", status);
-    }
-    let content_length = response.content_length();
-    if let Err(code) = check_status(status, range, content_length) {
-        return error_with_status(id, code, status);
-    }
-    let mut headers = serde_json::Map::new();
-    for name in RESPONSE_HEADERS {
-        if let Some(value) = response.headers().get(*name).and_then(|v| v.to_str().ok()) {
-            headers.insert((*name).to_owned(), Value::String(value.to_owned()));
+        let client = match builder.build() {
+            Ok(c) => c,
+            Err(_) => return error_reply(id, "client"),
+        };
+        let response = match client
+            .get(url.clone())
+            .header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end))
+            .send()
+        {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => return error_reply(id, "timeout"),
+            Err(_) => return error_reply(id, "network"),
+        };
+        let status = response.status().as_u16();
+        if response.status().is_redirection() {
+            let target = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|loc| url.join(loc).ok())
+                .filter(redirect_allowed);
+            match target {
+                Some(next) if hop < MAX_REDIRECTS => {
+                    url = next;
+                    continue;
+                }
+                _ => return error_with_status(id, "redirect_not_allowed", status),
+            }
         }
+        let content_length = response.content_length();
+        if let Err(code) = check_status(status, range, content_length) {
+            return error_with_status(id, code, status);
+        }
+        let mut headers = serde_json::Map::new();
+        for name in RESPONSE_HEADERS {
+            if let Some(value) = response.headers().get(*name).and_then(|v| v.to_str().ok()) {
+                headers.insert((*name).to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        let content_range = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let head = ResponseHead { status, content_range, content_length, headers };
+        return deliver(id, range, head, response, cancel, sink);
     }
-    let content_range = response
-        .headers()
-        .get(reqwest::header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    let head = ResponseHead { status, content_range, content_length, headers };
-    deliver(id, range, head, response, cancel, sink)
+    error_with_status(id, "redirect_not_allowed", 0)
 }
 
 /// Annulations en cours, par identifiant de requête. Une entrée n'existe que pendant la lecture.
@@ -380,8 +417,48 @@ mod tests {
     #[test]
     fn redirects_are_revalidated_per_hop() {
         assert!(redirect_allowed(&url::Url::parse("https://example.debrid.it/f2").unwrap()));
-        assert!(!redirect_allowed(&url::Url::parse("https://evil.com/f2").unwrap()));
-        assert!(!redirect_allowed(&url::Url::parse("http://example.debrid.it/f2").unwrap()));
+        // Hôte nominatif public : permis (lien direct d'addon), la résolution publique est vérifiée à la connexion.
+        assert!(redirect_allowed(&url::Url::parse("https://cdn.example.com/f2?token=a").unwrap()));
+        for ko in ["http://example.debrid.it/f2", "http://cdn.example.com/f2", "https://127.0.0.1/f2", "https://[::1]/f2", "https://192.168.1.2/f2", "https://localhost/f2", "https://u:p@cdn.example.com/f2", "https://cdn.example.com:8443/f2", "https://2130706433/f2"] {
+            assert!(!redirect_allowed(&url::Url::parse(ko).unwrap()), "{}", ko);
+        }
+    }
+
+    #[test]
+    fn direct_addon_links_are_accepted_with_query_and_long_paths() {
+        assert!(parse_source_url("https://files.example.tv/dl/abc/Film.2024.1080p.mp4?sig=xyz&e=1").is_some());
+        assert!(parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(3000))).is_some());
+        assert!(parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(5000))).is_none());
+        assert!(parse_source_url("https://x.real-debrid.com/d/ABC").is_some());
+    }
+
+    fn range_request(url: &str) -> NativeRangeRequest {
+        request(url, Some("bytes=0-99"), None)
+    }
+
+    #[test]
+    fn direct_link_resolving_to_a_private_address_is_refused_without_network() {
+        let cancel = AtomicBool::new(false);
+        let mut sink = |_: Value| true;
+        for ip in ["127.0.0.1", "10.0.0.5", "192.168.1.20", "169.254.1.1", "::1"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            let fin = run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![ip]);
+            assert_eq!(fin["error"], "host_not_allowed", "{}", ip);
+        }
+        // Une seule adresse privée parmi des publiques suffit à refuser (rebinding).
+        let mixed = |_: &str| vec!["93.184.216.34".parse().unwrap(), "10.0.0.1".parse().unwrap()];
+        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &mixed)["error"], "host_not_allowed");
+        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![])["error"], "host_not_allowed");
+    }
+
+    #[test]
+    fn unreadable_links_are_refused_before_any_resolution() {
+        let cancel = AtomicBool::new(false);
+        let mut sink = |_: Value| true;
+        let boom = |_: &str| -> Vec<IpAddr> { panic!("pas de DNS pour un lien refusé") };
+        for ko in ["http://files.example.tv/a.mp4", "https://127.0.0.1/a.mp4", "https://files.example.tv:8443/a", "magnet:?xt=urn:btih:abc", "ftp://files.example.tv/a"] {
+            assert_eq!(run_with(&range_request(ko), &cancel, &mut sink, &boom)["error"], "host_not_allowed", "{}", ko);
+        }
     }
 
     #[test]
@@ -531,7 +608,7 @@ mod tests {
         let mut sink = |_: Value| true;
         let check = |r: NativeRangeRequest, sink: &mut dyn FnMut(Value) -> bool| run(&r, &cancel, sink)["error"].clone();
         assert_eq!(check(request("https://example.debrid.it/f", Some("bytes=0-9"), Some("POST")), &mut sink), "method_not_allowed");
-        assert_eq!(check(request("https://evil.com/f", Some("bytes=0-9"), None), &mut sink), "host_not_allowed");
+        assert_eq!(check(request("https://127.0.0.1/f", Some("bytes=0-9"), None), &mut sink), "host_not_allowed");
         assert_eq!(check(request("https://example.debrid.it/f", None, None), &mut sink), "range_required");
         assert_eq!(check(request("https://example.debrid.it/f", Some("bytes=0-"), None), &mut sink), "bad_range");
     }
