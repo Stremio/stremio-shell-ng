@@ -13,7 +13,7 @@ const ALLOWED_SUFFIXES: &[&str] = &[".debrid.it", ".alldebrid.com", ".torbox.app
 /// En-têtes de requête transmis (tout le reste est ignoré).
 const ALLOWED_REQUEST_HEADERS: &[&str] = &["authorization", "content-type", "range", "accept"];
 /// En-têtes de réponse renvoyés à la page.
-const RESPONSE_HEADERS: &[&str] = &["content-type", "content-range", "content-length", "retry-after", "accept-ranges"];
+pub const RESPONSE_HEADERS: &[&str] = &["content-type", "content-range", "content-length", "retry-after", "accept-ranges"];
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 20_000;

@@ -431,6 +431,26 @@ impl MainWindow {
                             });
                         }
                     }
+                    // Pont de lecture par plages (fichiers débridés, morceaux bornés) : même allowlist que native-http, voir native_range.rs.
+                    Some("native-range") => {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<crate::stremio_app::native_range::NativeRangeRequest>(params.clone()).ok()
+                        }) {
+                            crate::stremio_app::native_range::start(request, web_tx_web.clone());
+                        }
+                    }
+                    Some("native-range-cancel") => {
+                        if let Some(cancel) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<crate::stremio_app::native_range::NativeRangeCancel>(params.clone()).ok()
+                        }) {
+                            crate::stremio_app::native_range::cancel(cancel.id);
+                        }
+                    }
+                    Some("native-range-caps") => {
+                        web_tx_web
+                            .send(RPCResponse::native_range_caps(crate::stremio_app::native_range::caps()))
+                            .ok();
+                    }
                     // Pont HTTP « addon stream » (GET https borné, voir addon_http.rs) : mêmes signaux de réponse que native-http.
                     Some("native-addon-http") => {
                         if let Some(request) = msg.get_params().and_then(|params| {

@@ -9,6 +9,7 @@ pub mod lastaddon_import;
 pub mod addon_http;
 pub mod box_playlist;
 pub mod native_http;
+pub mod native_range;
 pub mod shell_config;
 pub mod stremio_player;
 pub mod stremio_server;

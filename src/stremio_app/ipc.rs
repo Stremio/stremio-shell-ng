@@ -157,6 +157,18 @@ impl RPCResponse {
     pub fn native_http_response(payload: serde_json::Value) -> String {
         Self::response_message(Some(json!(["native-http-response", payload])))
     }
+    /// Morceau du pont de lecture par plages (voir native_range.rs), émis pendant la lecture.
+    pub fn native_range_chunk(payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!(["native-range-chunk", payload])))
+    }
+    /// Réponse finale du pont de lecture par plages (voir native_range.rs) : statut et en-têtes, ou erreur.
+    pub fn native_range_response(payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!(["native-range-response", payload])))
+    }
+    /// Capacités du pont de lecture par plages, en réponse à `native-range-caps`.
+    pub fn native_range_caps(payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!(["native-range-caps", payload])))
+    }
     pub fn cache_directory_selected(
         request_id: u64,
         result: Result<Option<String>, String>,
