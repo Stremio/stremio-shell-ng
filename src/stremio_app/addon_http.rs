@@ -102,9 +102,10 @@ fn ipv6_is_public(ip: Ipv6Addr) -> bool {
         || (s[0] == 0x0100 && s[1..4] == [0, 0, 0])) // discard 100::/64
 }
 
-/// Valide l'URL sans réseau : https, port 443, pas d'identifiants, hôte nominatif, chemin borné.
-pub fn parse_addon_url(raw: &str) -> Option<url::Url> {
-    if raw.len() > MAX_URL_LEN {
+/// Hôte nominatif, https:443 sans identifiants (la forme d'URL commune aux ponts natifs vers un hôte public arbitraire).
+/// Pas de contrôle du chemin ni de la requête ; la résolution DNS publique reste à faire (`resolve_public`).
+pub fn public_named_url(raw: &str, max_len: usize) -> Option<url::Url> {
+    if raw.len() > max_len {
         return None;
     }
     let url = url::Url::parse(raw).ok()?;
@@ -123,10 +124,14 @@ pub fn parse_addon_url(raw: &str) -> Option<url::Url> {
         && url.scheme() == "https"
         && url.username().is_empty()
         && url.password().is_none()
-        && matches!(url.port(), None | Some(443))
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && path_allowed(url.path());
+        && matches!(url.port(), None | Some(443));
+    ok.then_some(url)
+}
+
+/// Valide l'URL sans réseau : https, port 443, pas d'identifiants, hôte nominatif, chemin borné.
+pub fn parse_addon_url(raw: &str) -> Option<url::Url> {
+    let url = public_named_url(raw, MAX_URL_LEN)?;
+    let ok = url.query().is_none() && url.fragment().is_none() && path_allowed(url.path());
     ok.then_some(url)
 }
 
@@ -137,16 +142,32 @@ pub fn redirect_target(base: &url::Url, location: &str) -> Option<url::Url> {
 }
 
 /// Résout l'hôte et refuse si UNE adresse n'est pas publique. Renvoie les adresses à épingler.
-fn resolve_public(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Option<Vec<SocketAddr>> {
-    let ips = resolver(host);
-    if ips.is_empty() || !ips.iter().all(|ip| ip_is_public(*ip)) {
-        return None;
-    }
-    Some(ips.into_iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+pub fn resolve_public(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Option<Vec<SocketAddr>> {
+    resolve_public_checked(host, resolver).ok()
 }
 
-fn system_resolver(host: &str) -> Vec<IpAddr> {
-    (host, 443u16).to_socket_addrs().map(|it| it.map(|a| a.ip()).collect()).unwrap_or_default()
+/// Comme `resolve_public`, mais distingue un échec de résolution (`network` : aucune adresse, DNS indisponible) d'un refus
+/// (`host_not_allowed` : au moins une adresse non publique).
+pub fn resolve_public_checked(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+    let ips = resolver(host);
+    if ips.is_empty() {
+        return Err("network");
+    }
+    if !ips.iter().all(|ip| ip_is_public(*ip)) {
+        return Err("host_not_allowed");
+    }
+    Ok(ips.into_iter().map(|ip| SocketAddr::new(ip, 443)).collect())
+}
+
+/// Résolution système ; un échec (liste vide) est retenté une fois avant d'abandonner.
+pub fn system_resolver(host: &str) -> Vec<IpAddr> {
+    for _ in 0..2 {
+        let ips: Vec<IpAddr> = (host, 443u16).to_socket_addrs().map(|it| it.map(|a| a.ip()).collect()).unwrap_or_default();
+        if !ips.is_empty() {
+            return ips;
+        }
+    }
+    Vec::new()
 }
 
 /// Lit au plus `max` octets ; `Err(true)` si la source en contient davantage, `Err(false)` en cas d'erreur de lecture.
