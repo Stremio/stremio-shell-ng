@@ -433,10 +433,17 @@ impl MainWindow {
                     }
                     // Pont de lecture par plages (fichiers débridés, morceaux bornés) : même allowlist que native-http, voir native_range.rs.
                     Some("native-range") => {
-                        if let Some(request) = msg.get_params().and_then(|params| {
+                        let params = msg.get_params();
+                        match params.and_then(|params| {
                             serde_json::from_value::<crate::stremio_app::native_range::NativeRangeRequest>(params.clone()).ok()
                         }) {
-                            crate::stremio_app::native_range::start(request, web_tx_web.clone());
+                            Some(request) => crate::stremio_app::native_range::start(request, web_tx_web.clone()),
+                            // Requête illisible : réponse finale quand même, avec l'identifiant s'il existe (jamais de silence).
+                            None => {
+                                web_tx_web
+                                    .send(RPCResponse::native_range_response(crate::stremio_app::native_range::bad_request(params)))
+                                    .ok();
+                            }
                         }
                     }
                     Some("native-range-cancel") => {

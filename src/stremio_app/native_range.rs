@@ -9,6 +9,8 @@
 //! - `native-range-response` (toujours en dernier) : `{id, status, contentRange, contentLength, headers, chunks}` ou `{id, error, status?}` ;
 //! - annulation `native-range-cancel` : `{id}` ; la lecture s'arrête et la réponse finale est `{id, error: "cancelled"}` ;
 //! - capacités `native-range-caps` : répond `native-range-caps` avec `{version: 1, maxChunk, maxRange}`.
+//! - refus immédiats, en `native-range-response` `{id, error}` : `busy` (6 lectures déjà actives), `duplicate_id` (id déjà actif),
+//!   `spawn_failed` (fil non créé), `bad_request` (requête illisible, `id` repris s'il existe, sinon `null`).
 //!
 //! Rien n'est journalisé (ni URL, ni corps).
 
@@ -215,7 +217,14 @@ pub fn run(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(V
             attempt.follow()
         }
     });
-    let client = match reqwest::blocking::Client::builder().timeout(timeout).redirect(policy).build() {
+    // Pas de Referer automatique (aucune fuite d'URL d'origine), et HTTPS obligatoire y compris sur les redirections.
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .redirect(policy)
+        .referer(false)
+        .https_only(true)
+        .build()
+    {
         Ok(c) => c,
         Err(_) => return error_reply(id, "client"),
     };
@@ -258,16 +267,32 @@ fn active() -> MutexGuard<'static, Vec<(u64, Arc<AtomicBool>)>> {
     ACTIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Nombre maximal de lectures simultanées ; au-delà, la requête reçoit `busy`.
+const MAX_ACTIVE: usize = 6;
+
+/// Admission d'une lecture : identifiant non utilisé et moins de `MAX_ACTIVE` lectures en cours.
+fn admit(list: &mut Vec<(u64, Arc<AtomicBool>)>, id: u64) -> Result<Arc<AtomicBool>, &'static str> {
+    if list.iter().any(|(i, _)| *i == id) {
+        return Err("duplicate_id");
+    }
+    if list.len() >= MAX_ACTIVE {
+        return Err("busy");
+    }
+    let flag = Arc::new(AtomicBool::new(false));
+    list.push((id, flag.clone()));
+    Ok(flag)
+}
+
 /// Enregistrement d'une lecture : retiré dès que la lecture se termine, même en cas d'erreur.
 struct Registration {
     flag: Arc<AtomicBool>,
 }
 
 impl Registration {
-    fn new(id: u64) -> Self {
-        let flag = Arc::new(AtomicBool::new(false));
-        active().push((id, flag.clone()));
-        Registration { flag }
+    /// Admission et enregistrement sous un seul verrou : le compteur et l'unicité ne peuvent pas être dépassés en course.
+    fn try_new(id: u64) -> Result<Self, &'static str> {
+        let flag = admit(&mut active(), id)?;
+        Ok(Registration { flag })
     }
 }
 
@@ -277,15 +302,36 @@ impl Drop for Registration {
     }
 }
 
-/// Lance une lecture dans un fil dédié. L'enregistrement de l'annulation se fait avant le retour,
-/// pour qu'une commande `native-range-cancel` envoyée juste après soit prise en compte.
+/// Lance une lecture dans un fil dédié. L'admission et l'enregistrement de l'annulation se font avant le retour,
+/// pour qu'une commande `native-range-cancel` envoyée juste après soit prise en compte. Un refus (`busy`,
+/// `duplicate_id`) ou un fil non créé (`spawn_failed`) reçoit tout de suite une réponse finale.
 pub fn start(req: NativeRangeRequest, reply: flume::Sender<String>) {
-    let registration = Registration::new(req.id);
-    thread::spawn(move || {
+    let id = req.id;
+    let registration = match Registration::try_new(id) {
+        Ok(registration) => registration,
+        Err(code) => {
+            reply.send(RPCResponse::native_range_response(error_reply(id, code))).ok();
+            return;
+        }
+    };
+    let fallback = reply.clone();
+    let spawned = thread::Builder::new().spawn(move || {
         let mut sink = |payload: Value| reply.send(RPCResponse::native_range_chunk(payload)).is_ok();
         let payload = run(&req, &registration.flag, &mut sink);
+        // Le créneau est libéré avant d'annoncer la fin : la page peut relancer une lecture dès la réponse reçue.
+        drop(registration);
         reply.send(RPCResponse::native_range_response(payload)).ok();
     });
+    if spawned.is_err() {
+        // La fermeture non lancée est relâchée avec son enregistrement : l'identifiant redevient libre.
+        fallback.send(RPCResponse::native_range_response(error_reply(id, "spawn_failed"))).ok();
+    }
+}
+
+/// Réponse finale pour une requête `native-range` illisible : l'identifiant est repris s'il est présent, sinon `null`.
+pub fn bad_request(params: Option<&Value>) -> Value {
+    let id = params.and_then(|p| p.get("id")).and_then(Value::as_u64).map_or(Value::Null, Value::from);
+    json!({ "id": id, "error": "bad_request" })
 }
 
 /// Demande l'arrêt de la lecture `id` (sans effet si elle n'existe pas ou est terminée).
@@ -493,13 +539,36 @@ mod tests {
     #[test]
     fn registration_is_cancelable_then_released() {
         let id = 9_100_001;
-        let reg = Registration::new(id);
+        let reg = Registration::try_new(id).unwrap();
         assert!(!reg.flag.load(Ordering::SeqCst));
         cancel(id);
         assert!(reg.flag.load(Ordering::SeqCst));
         drop(reg);
         assert!(active().iter().all(|(i, _)| *i != id));
         cancel(id);
+    }
+
+    #[test]
+    fn admission_refuses_duplicate_ids_and_caps_active_reads() {
+        let mut list = Vec::new();
+        for id in 1..=MAX_ACTIVE as u64 {
+            assert!(admit(&mut list, id).is_ok());
+        }
+        assert_eq!(admit(&mut list, 99).err(), Some("busy"));
+        // Un identifiant déjà actif est refusé même quand la limite est atteinte.
+        assert_eq!(admit(&mut list, 1).err(), Some("duplicate_id"));
+        list.pop();
+        assert!(admit(&mut list, 99).is_ok());
+        assert_eq!(admit(&mut list, 99).err(), Some("duplicate_id"));
+        assert_eq!(admit(&mut list, 100).err(), Some("busy"));
+    }
+
+    #[test]
+    fn unreadable_requests_get_a_final_bad_request_reply() {
+        assert_eq!(bad_request(Some(&json!({ "id": 7, "url": 42 }))), json!({ "id": 7, "error": "bad_request" }));
+        assert_eq!(bad_request(Some(&json!({ "id": "7" }))), json!({ "id": null, "error": "bad_request" }));
+        assert_eq!(bad_request(Some(&json!({ "url": "https://example.debrid.it/f" }))), json!({ "id": null, "error": "bad_request" }));
+        assert_eq!(bad_request(None), json!({ "id": null, "error": "bad_request" }));
     }
 
     #[test]
