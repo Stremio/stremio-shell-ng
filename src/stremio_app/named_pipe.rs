@@ -207,20 +207,12 @@ impl PipeServer {
 }
 
 pub enum SingleInstance {
-    /// The command was delivered to the running instance.
     Forwarded,
-    /// This process owns the pipe and must accept commands from later launches.
     Primary(PipeServer),
-    /// Neither forwarding nor owning the pipe succeeded.
     Unavailable(io::Error),
 }
 
-/// Forwards `command` to the running instance or becomes the instance that receives commands.
-///
-/// Binding fails with `ERROR_ACCESS_DENIED` while another process still owns the pipe: an
-/// instance that is starting, exiting, or busy with another launch. Retry the whole handoff
-/// for a bounded number of `attempts`, so a live owner receives the command and a released
-/// pipe can be bound. Other errors are returned immediately.
+// Retry while another instance owns the pipe (bind fails with ERROR_ACCESS_DENIED).
 pub fn acquire_single_instance(
     path: &Path,
     command: &[u8],
@@ -307,7 +299,6 @@ mod tests {
     fn receive(listener: &mut PipeServer) -> Vec<u8> {
         let mut stream = listener.accept().unwrap();
         let mut buf = vec![];
-        // Like the app, keep what was read when the client closes the pipe.
         stream.read_to_end(&mut buf).ok();
         buf
     }
