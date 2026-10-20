@@ -14,6 +14,6 @@ pub mod splash;
 pub mod systray;
 pub mod window_helper;
 pub mod window_settings;
-pub use named_pipe::{PipeClient, PipeServer};
+pub use named_pipe::{acquire_single_instance, PipeServer, SingleInstance};
 pub mod constants;
 pub mod updater;

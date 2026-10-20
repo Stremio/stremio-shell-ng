@@ -6,7 +6,7 @@ use std::{
     cell::RefCell,
     io::Read,
     os::windows::process::CommandExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{self, Command},
     str,
     sync::{Arc, Mutex},
@@ -52,7 +52,7 @@ pub enum OpenRequest {
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub command: String,
-    pub commands_path: Option<String>,
+    pub commands_server: RefCell<Option<PipeServer>>,
     pub webui_url: String,
     pub no_splash: bool,
     pub dev_tools: bool,
@@ -245,13 +245,6 @@ impl MainWindow {
             }
         });
 
-        // Single application IPC
-        let socket_path = Path::new(
-            self.commands_path
-                .as_ref()
-                .expect("Cannot initialie the single application IPC"),
-        );
-
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;
         let release_candidate = self.release_candidate;
@@ -301,7 +294,8 @@ impl MainWindow {
             }
         }); // thread
 
-        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+        // Single application IPC
+        if let Some(mut listener) = self.commands_server.borrow_mut().take() {
             let focus_sender = self.focus_notice.sender();
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
