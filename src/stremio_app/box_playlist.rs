@@ -54,7 +54,7 @@ pub fn redirect_target(base: &url::Url, location: &str) -> Option<url::Url> {
 }
 
 /// Le corps est-il une playlist M3U (BOM et espaces initiaux tolérés) ?
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn is_m3u(body: &[u8]) -> bool {
     let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(body);
     let start = body.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(body.len());
