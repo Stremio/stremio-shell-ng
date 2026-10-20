@@ -1,6 +1,5 @@
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
-use rand::Rng;
 use serde_json;
 use std::{
     cell::RefCell,
@@ -30,8 +29,8 @@ use winapi::{
 
 use crate::stremio_app::{
     constants::{
-        safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL,
-        WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
+        safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_INTERVAL, WEB_ENDPOINT,
+        WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
@@ -72,7 +71,6 @@ pub struct MainWindow {
     pub start_hidden: bool,
     pub autoupdater_endpoint: Option<Url>,
     pub force_update: bool,
-    pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
     pub requested_window_op: Arc<Mutex<Option<WindowRequest>>>,
@@ -289,54 +287,44 @@ impl MainWindow {
                 .expect("Cannot initialie the single application IPC"),
         );
 
+        // Auto-update runs only when an endpoint is given explicitly (--autoupdater-endpoint).
+        let updater_enabled = self.autoupdater_endpoint.is_some();
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;
-        let release_candidate = self.release_candidate;
         let autoupdater_setup_file = self.autoupdater_setup_file.clone();
 
-        thread::spawn(move || {
-            loop {
-                if let Ok(msg) = updater_rx.recv() {
-                    if msg == "check_for_update" {
-                        break;
+        if let Some(updater_endpoint) = autoupdater_endpoint {
+            thread::spawn(move || {
+                loop {
+                    if let Ok(msg) = updater_rx.recv() {
+                        if msg == "check_for_update" {
+                            break;
+                        }
                     }
                 }
-            }
 
-            loop {
-                let current_version = env!("CARGO_PKG_VERSION")
-                    .parse()
-                    .expect("Should always be valid");
+                loop {
+                    let current_version = env!("CARGO_PKG_VERSION")
+                        .parse()
+                        .expect("Should always be valid");
 
-                let updater_endpoint = if let Some(ref endpoint) = autoupdater_endpoint {
-                    endpoint.clone()
-                } else {
-                    let mut rng = rand::thread_rng();
-                    let index = rng.gen_range(0..UPDATE_ENDPOINT.len());
-                    let mut url = Url::parse(UPDATE_ENDPOINT[index]).unwrap();
-                    url.query_pairs_mut().append_pair("arch", env!("ARCH"));
-                    if release_candidate {
-                        url.query_pairs_mut().append_pair("rc", "true");
+                    let updater =
+                        updater::Updater::new(current_version, &updater_endpoint, force_update);
+                    match updater.autoupdate() {
+                        Ok(Some(update)) => {
+                            println!("New version ready to install v{}", update.version);
+                            let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
+                            *autoupdater_setup_file = Some(update.file.clone());
+                            web_tx_upd.send(RPCResponse::update_available()).ok();
+                        }
+                        Ok(None) => println!("No new updates found"),
+                        Err(e) => eprintln!("Failed to fetch updates: {e}"),
                     }
-                    url
-                };
 
-                let updater =
-                    updater::Updater::new(current_version, &updater_endpoint, force_update);
-                match updater.autoupdate() {
-                    Ok(Some(update)) => {
-                        println!("New version ready to install v{}", update.version);
-                        let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
-                        *autoupdater_setup_file = Some(update.file.clone());
-                        web_tx_upd.send(RPCResponse::update_available()).ok();
-                    }
-                    Ok(None) => println!("No new updates found"),
-                    Err(e) => eprintln!("Failed to fetch updates: {e}"),
+                    thread::sleep(time::Duration::from_secs(UPDATE_INTERVAL));
                 }
-
-                thread::sleep(time::Duration::from_secs(UPDATE_INTERVAL));
-            }
-        }); // thread
+            }); // thread
+        }
 
         if let Ok(mut listener) = PipeServer::bind(socket_path) {
             let focus_sender = self.focus_notice.sender();
@@ -523,9 +511,11 @@ impl MainWindow {
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
                             .ok();
-                        updater_tx_web
-                            .send("check_for_update".to_owned())
-                            .expect("Failed to send value to updater channel");
+                        if updater_enabled {
+                            updater_tx_web
+                                .send("check_for_update".to_owned())
+                                .expect("Failed to send value to updater channel");
+                        }
 
                         open_sender_web.send(OpenRequest::Ready).ok();
                     }

@@ -40,12 +40,13 @@ struct Opt {
         help = "Override the WebUI URL (default: the Laststream app served by the local service)"
     )]
     webui_url: Option<String>,
-    #[clap(long, help = "Ovveride autoupdater endpoint")]
+    #[clap(
+        long,
+        help = "Enable the autoupdater and check this endpoint (no update check without it)"
+    )]
     autoupdater_endpoint: Option<Url>,
     #[clap(long, help = "Forces reinstalling current version")]
     force_update: bool,
-    #[clap(long, help = "Check for RC updates")]
-    release_candidate: bool,
     #[clap(
         long,
         default_value = "",
@@ -115,7 +116,6 @@ fn main() {
         start_hidden: opt.start_hidden,
         autoupdater_endpoint: opt.autoupdater_endpoint,
         force_update: opt.force_update,
-        release_candidate: opt.release_candidate,
         ..Default::default()
     })
     .expect("Failed to build UI");
