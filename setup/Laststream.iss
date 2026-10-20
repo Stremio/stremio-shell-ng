@@ -1,6 +1,6 @@
 ﻿; Installeur Laststream (Inno Setup 6).
 ; Source : dist\laststream-desktop (dossier portable assemble par le build release, voir README-FR.txt).
-; Sortie : dist\installer\Laststream-Setup-1.0.3.exe
+; Sortie : dist\installer\Laststream-Setup-<MyAppVersion>.exe (nom donne par OutputBaseFilename).
 ; Installation par utilisateur, sans droits administrateur. La desinstallation ne supprime jamais
 ; les donnees utilisateur (%APPDATA%\Laststream) : aucune entree [UninstallDelete] ne les vise.
 
