@@ -145,11 +145,6 @@ impl RPCResponse {
     pub fn update_available() -> String {
         Self::response_message(Some(json!(["autoupdater-show-notif"])))
     }
-    pub fn discord_status(connected: bool) -> String {
-        Self::response_message(Some(json!(["discord-status", {
-            "connected": connected,
-        }])))
-    }
     pub fn media_key(action: &str) -> String {
         Self::response_message(Some(json!(["media-key", action])))
     }

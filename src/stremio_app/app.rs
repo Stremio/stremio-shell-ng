@@ -45,7 +45,6 @@ use crate::stremio_app::{
     PipeServer,
 };
 
-use super::discord::DiscordRpc;
 use super::stremio_server::{ServerEvent, StremioServer};
 
 /// Window operation asked by the Web UI and run on the UI thread.
@@ -359,7 +358,6 @@ impl MainWindow {
         let focus_sender = self.focus_notice.sender();
         let autoupdater_setup_mutex = self.autoupdater_setup_file.clone();
 
-        let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
@@ -588,44 +586,6 @@ impl MainWindow {
                             _ => {
                                 println!("Cannot obtain the setup file path");
                             }
-                        }
-                    }
-                    Some("discord-connect") => {
-                        if let Err(e) = discord_rpc.connect() {
-                            eprintln!("Discord connect error: {}", e);
-                            web_tx_web.send(RPCResponse::discord_status(false)).ok();
-                        }
-                    }
-                    Some("discord-disconnect") => {
-                        if let Err(e) = discord_rpc.disconnect() {
-                            eprintln!("Discord disconnect error: {}", e);
-                        }
-                        web_tx_web.send(RPCResponse::discord_status(false)).ok();
-                    }
-                    Some("discord-set-activity") => {
-                        if let Some(params) = msg.get_params() {
-                            let state = params.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                            let details =
-                                params.get("details").and_then(|v| v.as_str()).unwrap_or("");
-                            let image = params.get("image").and_then(|v| v.as_str());
-                            let start_timestamp =
-                                params.get("startTimestamp").and_then(|v| v.as_i64());
-                            let end_timestamp = params.get("endTimestamp").and_then(|v| v.as_i64());
-
-                            if let Err(e) = discord_rpc.set_activity(
-                                state,
-                                details,
-                                image,
-                                start_timestamp,
-                                end_timestamp,
-                            ) {
-                                eprintln!("Discord set activity error: {}", e);
-                            }
-                        }
-                    }
-                    Some("discord-clear-activity") => {
-                        if let Err(e) = discord_rpc.clear_activity() {
-                            eprintln!("Discord clear activity error: {}", e);
                         }
                     }
                     Some(player_command) if player_command.starts_with("mpv-") => {
