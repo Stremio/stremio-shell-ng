@@ -664,6 +664,10 @@ impl MainWindow {
                 icons: nwg::MessageIcons::Error,
             },
         );
+        // The web UI can become ready while the dialog is open.
+        if self.webui_ready.get() {
+            return;
+        }
         if choice == nwg::MessageChoice::Retry {
             if !self.no_splash {
                 self.splash_screen.show();
