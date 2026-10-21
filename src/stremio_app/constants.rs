@@ -1,7 +1,7 @@
 use url::Url;
 
 pub const APP_NAME: &str = "Laststream";
-pub const IPC_PATH: &str = "//./pipe/com.stremio5.";
+pub const IPC_PATH: &str = "//./pipe/com.laststream.";
 pub const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
 pub const WEB_ENDPOINT: &str = "https://web.stremio.com/";
 pub const STA_ENDPOINT: &str = "https://staging.strem.io/";
@@ -128,5 +128,10 @@ mod tests {
     #[test]
     fn invalid_urls_are_not_opened() {
         assert_eq!(safe_url("not a url"), None);
+    }
+
+    #[test]
+    fn single_instance_pipe_is_not_shared_with_stremio() {
+        assert_eq!(IPC_PATH, "//./pipe/com.laststream.");
     }
 }

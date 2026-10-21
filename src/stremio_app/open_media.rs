@@ -32,7 +32,7 @@ pub fn message(input: &str) -> Value {
 fn open(input: &str) -> Result<Value, String> {
     let url = Url::parse(input).map_err(|_| "Invalid media link.".to_string())?;
     let path: PathBuf = match url.scheme() {
-        "stremio" | "magnet" => return Ok(json!(["open-media", input])),
+        "magnet" => return Ok(json!(["open-media", input])),
         "file" => url
             .to_file_path()
             .map_err(|_| "Invalid local file URL.".to_string())?,
@@ -72,8 +72,6 @@ mod tests {
     #[test]
     fn preserves_links_and_encoded_trackers() {
         for input in [
-            "stremio://example.com/manifest.json",
-            "stremio:///detail/movie/tt1234567",
             "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&tr=https%3A%2F%2Fexample.com%2Fa%3Fx%3D1%26y%3D2",
         ] {
             assert_eq!(message(input), json!(["open-media", input]));
@@ -103,6 +101,7 @@ mod tests {
         for input in [
             "https://example.com/movie.mp4",
             "javascript:alert(1)",
+            "stremio://example.com/manifest.json",
             "file:///tmp/movie.mkv",
         ] {
             assert!(open(input).is_err());
