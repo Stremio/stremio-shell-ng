@@ -13,32 +13,6 @@ pub const SRV_BUFFER_SIZE: usize = 1024;
 pub const SERVER_IPC_KEY: &str = "SERVER_IPC_KEY";
 pub const SRV_LOG_SIZE: usize = 20;
 
-pub const WARNING_URL: &str = "https://www.stremio.com/warning#";
-pub const WHITELISTED_HOSTS: &[&str] = &[
-    "stremio.com",
-    "www.stremio.com",
-    "web.stremio.com",
-    "app.stremio.com",
-    "strem.io",
-    "api.strem.io",
-    "stremio.zendesk.com",
-    "google.com",
-    "www.google.com",
-    "youtube.com",
-    "www.youtube.com",
-    "twitch.tv",
-    "twitter.com",
-    "x.com",
-    "netflix.com",
-    "adex.network",
-    "amazon.com",
-    "forms.gle",
-    "www.hbomax.com",
-    "play.hbomax.com",
-    "www.disneyplus.com",
-    "imdb.com",
-];
-
 pub fn web_endpoint_with_streaming_server(server_url: &str) -> String {
     let server_url = server_url.trim_end_matches('/');
     let streaming_server_url =
@@ -48,29 +22,12 @@ pub fn web_endpoint_with_streaming_server(server_url: &str) -> String {
     format!("{web_endpoint}/#/?streamingServerUrl={streaming_server_url}")
 }
 
+/// Returns the URL to hand to the default browser, or `None` when it must not be
+/// opened externally. Only `http` and `https` links pass: local files, Windows
+/// paths (`C:\...` parses as a one-letter scheme) and any other scheme are refused.
 pub fn safe_url(uri: &str) -> Option<String> {
-    if let Ok(url) = Url::parse(uri) {
-        // Local files belong to the drag and drop handler, never to the browser.
-        // Windows paths such as C:\... parse as a one-letter scheme.
-        if url.scheme() == "file" || url.scheme().len() == 1 {
-            return None;
-        }
-        println!("URL is {url}");
-        let is_whitelisted = url.host().is_some_and(|host| {
-            WHITELISTED_HOSTS
-                .iter()
-                .any(|whitelisted_host| host.to_string() == *whitelisted_host)
-        });
-
-        let final_url = if is_whitelisted {
-            url.to_string()
-        } else {
-            format!("{}{}", WARNING_URL, urlencoding::encode(url.as_ref()))
-        };
-        Some(final_url)
-    } else {
-        None
-    }
+    let url = Url::parse(uri).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.to_string())
 }
 
 #[cfg(test)]
@@ -100,29 +57,33 @@ mod tests {
     }
 
     #[test]
-    fn whitelisted_links_open_directly() {
+    fn http_links_open_directly() {
         assert_eq!(
             safe_url("https://www.stremio.com/"),
             Some("https://www.stremio.com/".to_string())
         );
+        assert_eq!(
+            safe_url("https://www.themoviedb.org/movie/603?language=fr"),
+            Some("https://www.themoviedb.org/movie/603?language=fr".to_string())
+        );
+        assert_eq!(
+            safe_url("http://example.com/page?a=1"),
+            Some("http://example.com/page?a=1".to_string())
+        );
     }
 
     #[test]
-    fn other_links_open_the_warning_page() {
-        assert_eq!(
-            safe_url("https://example.com/page?a=1"),
-            Some(format!(
-                "{WARNING_URL}{}",
-                urlencoding::encode("https://example.com/page?a=1")
-            ))
-        );
-        assert_eq!(
-            safe_url("data:text/plain,hello"),
-            Some(format!(
-                "{WARNING_URL}{}",
-                urlencoding::encode("data:text/plain,hello")
-            ))
-        );
+    fn non_http_schemes_are_not_opened() {
+        for uri in [
+            "data:text/plain,hello",
+            "javascript:alert(1)",
+            "ftp://example.com/file",
+            "ipfs://bafy",
+            "rtp://example.com",
+            "calc",
+        ] {
+            assert_eq!(safe_url(uri), None, "{uri}");
+        }
     }
 
     #[test]
