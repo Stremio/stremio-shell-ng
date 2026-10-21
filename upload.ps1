@@ -22,7 +22,7 @@ if (-not $Installer -or -not (Test-Path $Installer)) { throw 'Installeur introuv
 $name = Split-Path $Installer -Leaf
 if ($name -notmatch '^Laststream-Setup-\d+\.\d+\.\d+\.exe$') { throw "Nom d'installeur inattendu : $name (attendu Laststream-Setup-X.Y.Z.exe)" }
 
-$cmd = @('wrangler', 'r2', 'object', 'put', "$bucket/windows/$name", '--file', $Installer, '--content-type', 'application/vnd.microsoft.portable-executable', '--remote')
+$cmd = @('--yes', 'wrangler@4', 'r2', 'object', 'put', "$bucket/windows/$name", '--file', $Installer, '--content-type', 'application/vnd.microsoft.portable-executable', '--remote')
 if ($DryRun) { Write-Host "npx $($cmd -join ' ')"; exit 0 }
 
 npx @cmd
