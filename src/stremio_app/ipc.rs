@@ -164,6 +164,10 @@ impl RPCResponse {
     pub fn native_range_caps(payload: serde_json::Value) -> String {
         Self::response_message(Some(json!(["native-range-caps", payload])))
     }
+    /// Réponse d'une méthode `download-*` (voir downloads.rs) : `["nom-de-méthode", {ok, ...}]`.
+    pub fn download_reply(method: &str, payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!([method, payload])))
+    }
     pub fn cache_directory_selected(
         request_id: u64,
         result: Result<Option<String>, String>,
