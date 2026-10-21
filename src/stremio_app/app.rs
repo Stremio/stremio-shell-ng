@@ -409,7 +409,12 @@ impl MainWindow {
                         }
                     }
                     Some(method) if downloads::is_worker_method(method) => {
-                        downloads::submit(method, msg.get_params(), web_tx_web.clone());
+                        let method = method.to_owned();
+                        let params = msg
+                            .args
+                            .and_then(|args| args.into_iter().nth(1))
+                            .unwrap_or(serde_json::Value::Null);
+                        downloads::submit(&method, params, web_tx_web.clone());
                     }
                     Some("pick-cache-directory") => {
                         if let Some(request) = msg.get_params().and_then(|params| {

@@ -6,8 +6,9 @@
 //! ou `{ok: false, code, message}`. Codes : `bad_id`, `bad_range`, `too_large`, `not_found`, `store_full`, `io`, `no_folder`,
 //! et `bad_data` (base64 illisible, hors liste de la spec).
 //!
-//! - `id` : uniquement `[A-Za-z0-9._-]`, 1 à 128 caractères, ni `.` ni `..`, sans nom de périphérique Windows (`CON`, `NUL`,
-//!   `COM1`…). Les chemins sont toujours `dossier + id + suffixe` : aucun chemin ne vient de la page.
+//! - `id` : préfixe `dl-`, puis au moins un caractère de `[A-Za-z0-9._-]`, 128 caractères au plus au total. `dl-` seul, `.`,
+//!   `..` et les noms de périphériques Windows sont refusés. Seuls les fichiers `dl-*` du dossier sont désignés (et comptés
+//!   par `usage`) : les chemins sont toujours `dossier + id + suffixe`, aucun ne vient de la page.
 //! - Les méthodes passent une à une, dans l'ordre d'arrivée, sur un seul fil de travail : pas de course entre `write` et `finalize`.
 //! - `download-folder-pick` n'est pas ici : le sélecteur tourne sur le fil de l'interface (app.rs) et `finish_pick` persiste le choix.
 //!
@@ -31,6 +32,10 @@ pub const MAX_WRITE_BYTES: usize = 16 * 1024 * 1024;
 /// Longueur maximale de la chaîne base64 d'une écriture : le codage de 16 Mio.
 const MAX_WRITE_BASE64: usize = MAX_WRITE_BYTES.div_ceil(3) * 4;
 const MAX_ID_LEN: usize = 128;
+/// Préfixe de tout identifiant : la page ne désigne que des fichiers `dl-*` du dossier.
+const ID_PREFIX: &str = "dl-";
+/// Fichier témoin créé puis supprimé pour vérifier qu'un dossier accepte une écriture (sans préfixe `dl-`, donc hors `usage`).
+const WRITE_TEST_NAME: &str = ".dl-write-test";
 const PART_SUFFIX: &str = "part";
 /// Extensions des fichiers finaux, dans l'ordre de recherche.
 const FINAL_EXTENSIONS: [&str; 3] = ["mkv", "mp4", "bin"];
@@ -95,12 +100,14 @@ const NO_FOLDER: DlError = DlError {
     message: "downloads folder unavailable",
 };
 
-/// Validation stricte de l'identifiant : seul chemin par lequel la page désigne un fichier.
+/// Validation stricte de l'identifiant : seul chemin par lequel la page désigne un fichier. Le préfixe `dl-` et au moins
+/// un caractère après lui sont obligatoires ; le reste suit le jeu `[A-Za-z0-9._-]`, 128 caractères au plus.
 pub fn validate_id(id: &str) -> Result<&str, DlError> {
     let charset = id
         .bytes()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'));
-    let valid = (1..=MAX_ID_LEN).contains(&id.len())
+    let valid = (ID_PREFIX.len() + 1..=MAX_ID_LEN).contains(&id.len())
+        && id.starts_with(ID_PREFIX)
         && charset
         && id != "."
         && id != ".."
@@ -112,7 +119,8 @@ pub fn validate_id(id: &str) -> Result<&str, DlError> {
     }
 }
 
-/// Noms de périphériques réservés de Windows : `CON.part` désigne la console, même avec une extension.
+/// Noms de périphériques réservés de Windows (`COM0`-`COM9`, `LPT0`-`LPT9`, `CON`, `PRN`, `AUX`, `NUL`) : `CON.part`
+/// désigne la console, même avec une extension. Sans effet sur un identifiant `dl-*`, gardé par défense en profondeur.
 fn is_device_name(id: &str) -> bool {
     let stem = id.split('.').next().unwrap_or_default();
     let fixed = ["CON", "PRN", "AUX", "NUL"]
@@ -121,7 +129,7 @@ fn is_device_name(id: &str) -> bool {
     let bytes = stem.as_bytes();
     let numbered = bytes.len() == 4
         && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
-        && (b'1'..=b'9').contains(&bytes[3]);
+        && bytes[3].is_ascii_digit();
     fixed || numbered
 }
 
@@ -316,12 +324,14 @@ pub fn finalize(dir: &Path, id: &str) -> Result<Value, DlError> {
     file.sync_data().map_err(map_io)?;
     drop(file);
     let ext = detect_extension(&head[..head_len]);
-    let target = final_path(dir, id, ext);
-    fs::rename(&part, &target).map_err(map_io)?;
-    // Une version finale d'une autre extension ne doit pas rester à côté du nouveau fichier.
+    // Une version finale d'une autre extension ne doit pas rester à côté du nouveau fichier. Elle part avant le
+    // renommage : si celui-ci échoue, il ne reste que le `.part`, référence pour reprendre (une finale périmée ne doit
+    // jamais passer devant la nouvelle dans `find_final`).
     for other in FINAL_EXTENSIONS.iter().filter(|other| **other != ext) {
         remove_if_exists(&final_path(dir, id, other))?;
     }
+    let target = final_path(dir, id, ext);
+    fs::rename(&part, &target).map_err(map_io)?;
     Ok(json!({ "ok": true, "path": path_text(&target)?, "size": size }))
 }
 
@@ -342,13 +352,17 @@ pub fn remove(dir: &Path, id: &str) -> Result<Value, DlError> {
     Ok(json!({ "ok": true }))
 }
 
-/// `used` : somme des fichiers du dossier ; `available` : espace libre du volume.
+/// `used` : somme des fichiers `dl-*` du dossier (les autres ne sont pas comptés) ; `available` : espace libre du volume.
 pub fn usage(dir: &Path) -> Result<Value, DlError> {
     let mut used = 0u64;
     for entry in fs::read_dir(dir).map_err(map_io)? {
         let entry = entry.map_err(map_io)?;
+        let is_download = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(ID_PREFIX));
         if let Ok(metadata) = entry.metadata() {
-            if metadata.is_file() {
+            if is_download && metadata.is_file() {
                 used = used.saturating_add(metadata.len());
             }
         }
@@ -397,13 +411,29 @@ fn folder_get() -> Result<Value, DlError> {
     Ok(json!({ "ok": true, "path": path_text(&dir)?, "isDefault": is_default }))
 }
 
+/// Vérifie qu'un dossier accepte une écriture : crée puis supprime `.dl-write-test`. Sinon `no_folder`. Un fichier de ce
+/// nom déjà présent n'est ni tronqué ni supprimé : on vérifie seulement qu'il s'ouvre en écriture.
+fn check_writable(dir: &Path) -> Result<(), DlError> {
+    let probe = dir.join(WRITE_TEST_NAME);
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => fs::remove_file(&probe).map_err(|_| NO_FOLDER),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => OpenOptions::new()
+            .write(true)
+            .open(&probe)
+            .map(|_| ())
+            .map_err(|_| NO_FOLDER),
+        Err(_) => Err(NO_FOLDER),
+    }
+}
+
 /// Suite du sélecteur de dossier (fil de l'interface) : `selected` vaut le dossier choisi, `None` si annulé, ou une erreur
-/// si le chemin n'est pas lisible. Le choix est écrit dans `shell.json` (`downloads_dir`), les autres clés sont conservées.
+/// si le chemin n'est pas lisible. Le dossier choisi doit accepter une écriture, sinon `no_folder` et rien n'est sauvegardé.
+/// Le choix est écrit dans `shell.json` (`downloads_dir`), les autres clés sont conservées.
 pub fn finish_pick(selected: Result<Option<String>, String>) -> Value {
     let outcome = match selected {
-        Ok(Some(path)) => shell_config::save_downloads_dir(&path)
-            .map(|()| json!({ "ok": true, "path": path }))
-            .map_err(|_| IO),
+        Ok(Some(path)) => check_writable(Path::new(&path))
+            .and_then(|()| shell_config::save_downloads_dir(&path).map_err(|_| IO))
+            .map(|()| json!({ "ok": true, "path": path })),
         Ok(None) => Ok(json!({ "ok": true, "path": null })),
         Err(_) => Err(IO),
     };
@@ -425,7 +455,8 @@ struct Job {
 static WORKER: OnceLock<flume::Sender<Job>> = OnceLock::new();
 
 /// Met une méthode `download-*` en file ; sa réponse part sur `reply` une fois exécutée. Une seule file, dans l'ordre.
-pub fn submit(method: &str, params: Option<&Value>, reply: flume::Sender<String>) {
+/// `params` est déplacé, sans copie : une écriture peut peser 16 Mio.
+pub fn submit(method: &str, params: Value, reply: flume::Sender<String>) {
     let worker = WORKER.get_or_init(|| {
         let (tx, rx) = flume::unbounded::<Job>();
         thread::spawn(move || {
@@ -441,7 +472,7 @@ pub fn submit(method: &str, params: Option<&Value>, reply: flume::Sender<String>
     worker
         .send(Job {
             method: method.to_owned(),
-            params: params.cloned().unwrap_or(Value::Null),
+            params,
             reply,
         })
         .ok();
@@ -528,54 +559,86 @@ mod tests {
 
     #[test]
     fn ids_are_strictly_validated() {
-        let long = "a".repeat(128);
-        let too_long = "a".repeat(129);
+        // 128 caractères préfixe compris, puis 129.
+        let long = format!("dl-{}", "a".repeat(125));
+        let too_long = format!("dl-{}", "a".repeat(126));
         for ok in [
-            "a",
-            "A-b_c.d",
-            "movie.2024.1080p.mkv",
-            ".hidden",
-            "COM10",
-            "con-x",
+            "dl-a",
+            "dl-A-b_c.d",
+            "dl-tt0111161",
+            "dl-tt1_003a1_003a2",
+            "dl-movie.2024.1080p.mkv",
+            "dl-.hidden",
+            "dl-COM10",
+            "dl-con-x",
+            // Le préfixe neutralise les noms de périphériques : `dl-CON` est un nom ordinaire.
+            "dl-CON",
+            "dl-nul.part",
             long.as_str(),
         ] {
             assert_eq!(validate_id(ok), Ok(ok), "{ok}");
         }
         for ko in [
             "",
+            // Sans préfixe `dl-`, ou sans rien après lui.
+            "dl-",
+            "dl",
+            "DL-a",
+            "tt1",
+            "con",
+            "film",
+            "CON",
+            "COM1",
             ".",
             "..",
             "../x",
-            "a/b",
-            "a\\b",
+            "dl-a/b",
+            "dl-a\\b",
             "C:x",
-            "a b",
-            "é",
-            "a\0b",
-            "a%2F",
+            "dl-a b",
+            "dl-é",
+            "dl-a\0b",
+            "dl-a%2F",
             too_long.as_str(),
-            "CON",
-            "con.part",
-            "Nul.mkv",
-            "lpt1",
-            "COM9.bin",
         ] {
             assert_eq!(validate_id(ko), Err(BAD_ID), "{ko}");
         }
     }
 
     #[test]
+    fn windows_device_names_are_refused_with_or_without_extension() {
+        for name in [
+            "CON",
+            "nul.mkv",
+            "COM0",
+            "com0.part",
+            "LPT0",
+            "lpt9.bin",
+            "COM9",
+            "PRN.x",
+            "AUX",
+        ] {
+            assert!(is_device_name(name), "{}", name);
+        }
+        for name in ["COM10", "dl-COM0", "CONX", "LPT", "dl-nul.part"] {
+            assert!(!is_device_name(name), "{}", name);
+        }
+    }
+
+    #[test]
     fn invalid_ids_never_reach_the_disk() {
         let tmp = TempDir::new("badid");
-        for method in [
-            "download-open",
-            "download-size",
-            "download-finalize",
-            "download-remove",
-        ] {
-            let reply = envelope(run_in(tmp.path(), method, &json!({ "id": ".." })));
-            assert_eq!(reply["code"], "bad_id", "{method}");
-            assert_eq!(reply["ok"], false);
+        for id in ["..", "tt1", "con", "dl-", "dl", "film"] {
+            for method in [
+                "download-open",
+                "download-size",
+                "download-finalize",
+                "download-remove",
+            ] {
+                let reply = envelope(run_in(tmp.path(), method, &json!({ "id": id })));
+                assert_eq!(reply["code"], "bad_id", "{method} {id}");
+                assert_eq!(reply["ok"], false);
+            }
         }
         let reply = envelope(run_in(tmp.path(), "download-open", &json!({})));
         assert_eq!(reply["code"], "bad_id");
@@ -586,34 +649,37 @@ mod tests {
     fn write_then_resume_keeps_the_size() {
         let tmp = TempDir::new("resume");
         let dir = tmp.path();
-        assert_eq!(open(dir, "film").unwrap()["size"], 0);
+        assert_eq!(open(dir, "dl-film").unwrap()["size"], 0);
         assert_eq!(
-            write_chunk(dir, "film", 0, &b64(b"hello")).unwrap()["size"],
+            write_chunk(dir, "dl-film", 0, &b64(b"hello")).unwrap()["size"],
             5
         );
         // Reprise : une nouvelle ouverture repart de la taille du .part, sans le tronquer.
-        assert_eq!(open(dir, "film").unwrap()["size"], 5);
+        assert_eq!(open(dir, "dl-film").unwrap()["size"], 5);
         assert_eq!(
-            write_chunk(dir, "film", 5, &b64(b" world")).unwrap()["size"],
+            write_chunk(dir, "dl-film", 5, &b64(b" world")).unwrap()["size"],
             11
         );
-        assert_eq!(fs::read(dir.join("film.part")).unwrap(), b"hello world");
-        assert_eq!(size(dir, "film").unwrap()["size"], 11);
+        assert_eq!(fs::read(dir.join("dl-film.part")).unwrap(), b"hello world");
+        assert_eq!(size(dir, "dl-film").unwrap()["size"], 11);
         // Écriture au milieu : elle remplace les octets sans changer la taille.
-        assert_eq!(write_chunk(dir, "film", 0, &b64(b"J")).unwrap()["size"], 11);
-        assert_eq!(fs::read(dir.join("film.part")).unwrap(), b"Jello world");
+        assert_eq!(
+            write_chunk(dir, "dl-film", 0, &b64(b"J")).unwrap()["size"],
+            11
+        );
+        assert_eq!(fs::read(dir.join("dl-film.part")).unwrap(), b"Jello world");
     }
 
     #[test]
     fn offset_beyond_the_size_is_refused() {
         let tmp = TempDir::new("offset");
         let dir = tmp.path();
-        write_chunk(dir, "film", 0, &b64(b"hello world")).unwrap();
-        assert_eq!(write_chunk(dir, "film", 12, &b64(b"x")), Err(BAD_RANGE));
-        assert_eq!(size(dir, "film").unwrap()["size"], 11);
+        write_chunk(dir, "dl-film", 0, &b64(b"hello world")).unwrap();
+        assert_eq!(write_chunk(dir, "dl-film", 12, &b64(b"x")), Err(BAD_RANGE));
+        assert_eq!(size(dir, "dl-film").unwrap()["size"], 11);
         // Fichier neuf : seul l'offset 0 est accepté.
-        assert_eq!(write_chunk(dir, "neuf", 1, &b64(b"x")), Err(BAD_RANGE));
-        assert!(!dir.join("neuf.part").exists());
+        assert_eq!(write_chunk(dir, "dl-neuf", 1, &b64(b"x")), Err(BAD_RANGE));
+        assert!(!dir.join("dl-neuf.part").exists());
     }
 
     #[test]
@@ -621,16 +687,16 @@ mod tests {
         let tmp = TempDir::new("cap");
         let dir = tmp.path();
         let over = b64(&vec![0u8; MAX_WRITE_BYTES + 1]);
-        assert_eq!(write_chunk(dir, "film", 0, &over), Err(TOO_LARGE));
+        assert_eq!(write_chunk(dir, "dl-film", 0, &over), Err(TOO_LARGE));
         assert_eq!(
-            write_chunk(dir, "film", 0, "pas du base64 !"),
+            write_chunk(dir, "dl-film", 0, "pas du base64 !"),
             Err(BAD_DATA)
         );
-        assert!(!dir.join("film.part").exists());
+        assert!(!dir.join("dl-film.part").exists());
         // Exactement 16 Mio passent.
         let max = b64(&vec![7u8; MAX_WRITE_BYTES]);
         assert_eq!(
-            write_chunk(dir, "film", 0, &max).unwrap()["size"],
+            write_chunk(dir, "dl-film", 0, &max).unwrap()["size"],
             MAX_WRITE_BYTES as u64
         );
     }
@@ -639,92 +705,127 @@ mod tests {
     fn truncate_shrinks_and_refuses_to_grow() {
         let tmp = TempDir::new("truncate");
         let dir = tmp.path();
-        write_chunk(dir, "film", 0, &b64(b"hello world")).unwrap();
-        assert_eq!(truncate(dir, "film", 5).unwrap()["size"], 5);
-        assert_eq!(fs::read(dir.join("film.part")).unwrap(), b"hello");
-        assert_eq!(truncate(dir, "film", 10), Err(BAD_RANGE));
-        assert_eq!(truncate(dir, "film", 0).unwrap()["size"], 0);
-        assert_eq!(size(dir, "film").unwrap()["size"], 0);
+        write_chunk(dir, "dl-film", 0, &b64(b"hello world")).unwrap();
+        assert_eq!(truncate(dir, "dl-film", 5).unwrap()["size"], 5);
+        assert_eq!(fs::read(dir.join("dl-film.part")).unwrap(), b"hello");
+        assert_eq!(truncate(dir, "dl-film", 10), Err(BAD_RANGE));
+        assert_eq!(truncate(dir, "dl-film", 0).unwrap()["size"], 0);
+        assert_eq!(size(dir, "dl-film").unwrap()["size"], 0);
     }
 
     #[test]
     fn finalize_names_the_file_by_its_signature() {
         let tmp = TempDir::new("finalize");
         let dir = tmp.path();
-        write_chunk(dir, "a", 0, &b64(&EBML)).unwrap();
-        write_chunk(dir, "b", 0, &b64(&MP4)).unwrap();
-        write_chunk(dir, "c", 0, &b64(b"garbage")).unwrap();
+        write_chunk(dir, "dl-a", 0, &b64(&EBML)).unwrap();
+        write_chunk(dir, "dl-b", 0, &b64(&MP4)).unwrap();
+        write_chunk(dir, "dl-c", 0, &b64(b"garbage")).unwrap();
 
-        let a = finalize(dir, "a").unwrap();
+        let a = finalize(dir, "dl-a").unwrap();
         assert_eq!(a["ok"], true);
-        assert_eq!(a["path"], dir.join("a.mkv").to_str().unwrap());
+        assert_eq!(a["path"], dir.join("dl-a.mkv").to_str().unwrap());
         assert_eq!(a["size"], EBML.len() as u64);
-        assert!(!dir.join("a.part").exists());
+        assert!(!dir.join("dl-a.part").exists());
         assert_eq!(
-            finalize(dir, "b").unwrap()["path"],
-            dir.join("b.mp4").to_str().unwrap()
+            finalize(dir, "dl-b").unwrap()["path"],
+            dir.join("dl-b.mp4").to_str().unwrap()
         );
         assert_eq!(
-            finalize(dir, "c").unwrap()["path"],
-            dir.join("c.bin").to_str().unwrap()
+            finalize(dir, "dl-c").unwrap()["path"],
+            dir.join("dl-c.bin").to_str().unwrap()
         );
 
         // Appel répété : même fichier, pas d'erreur.
         assert_eq!(
-            finalize(dir, "a").unwrap()["path"],
-            dir.join("a.mkv").to_str().unwrap()
+            finalize(dir, "dl-a").unwrap()["path"],
+            dir.join("dl-a.mkv").to_str().unwrap()
         );
         // Un fichier fini ne se réécrit pas, et `open` le signale.
-        assert_eq!(write_chunk(dir, "a", 0, &b64(b"x")), Err(ALREADY_FINAL));
-        let reopened = open(dir, "a").unwrap();
+        assert_eq!(write_chunk(dir, "dl-a", 0, &b64(b"x")), Err(ALREADY_FINAL));
+        let reopened = open(dir, "dl-a").unwrap();
         assert_eq!(reopened["finalized"], true);
         assert_eq!(reopened["size"], EBML.len() as u64);
         assert_eq!(
-            locate(dir, "b").unwrap()["path"],
-            dir.join("b.mp4").to_str().unwrap()
+            locate(dir, "dl-b").unwrap()["path"],
+            dir.join("dl-b.mp4").to_str().unwrap()
         );
     }
 
     #[test]
     fn finalize_without_part_is_not_found() {
         let tmp = TempDir::new("nopart");
-        assert_eq!(finalize(tmp.path(), "absent"), Err(NOT_FOUND));
-        assert_eq!(locate(tmp.path(), "absent"), Err(NOT_FOUND));
+        assert_eq!(finalize(tmp.path(), "dl-absent"), Err(NOT_FOUND));
+        assert_eq!(locate(tmp.path(), "dl-absent"), Err(NOT_FOUND));
     }
 
     #[test]
     fn stale_final_of_another_extension_is_replaced() {
         let tmp = TempDir::new("stale");
         let dir = tmp.path();
-        fs::write(dir.join("v.bin"), b"ancienne version").unwrap();
-        fs::write(dir.join("v.part"), EBML).unwrap();
-        finalize(dir, "v").unwrap();
-        assert!(dir.join("v.mkv").is_file());
-        assert!(!dir.join("v.bin").exists());
+        fs::write(dir.join("dl-v.bin"), b"ancienne version").unwrap();
+        fs::write(dir.join("dl-v.part"), EBML).unwrap();
+        finalize(dir, "dl-v").unwrap();
+        assert!(dir.join("dl-v.mkv").is_file());
+        assert!(!dir.join("dl-v.bin").exists());
+    }
+
+    #[test]
+    fn failed_rename_keeps_the_part_as_the_reference() {
+        let tmp = TempDir::new("order");
+        let dir = tmp.path();
+        fs::write(dir.join("dl-v.part"), EBML).unwrap();
+        fs::write(dir.join("dl-v.bin"), b"ancienne version").unwrap();
+        // Un dossier à la place de la cible : le renommage échoue.
+        fs::create_dir(dir.join("dl-v.mkv")).unwrap();
+        assert_eq!(finalize(dir, "dl-v"), Err(IO));
+        // Les finales d'autres extensions partent avant le renommage : il ne reste que le `.part`, référence pour reprendre.
+        assert!(!dir.join("dl-v.bin").exists());
+        assert!(dir.join("dl-v.part").is_file());
+        assert_eq!(size(dir, "dl-v").unwrap()["size"], EBML.len() as u64);
+    }
+
+    #[test]
+    fn chosen_folder_must_accept_a_write() {
+        let tmp = TempDir::new("writable");
+        let dir = tmp.path();
+        assert_eq!(check_writable(dir), Ok(()));
+        // Le témoin est supprimé : le dossier reste vide.
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 0);
+        // Un fichier du même nom n'est ni tronqué ni supprimé.
+        fs::write(dir.join(WRITE_TEST_NAME), b"garde").unwrap();
+        assert_eq!(check_writable(dir), Ok(()));
+        assert_eq!(fs::read(dir.join(WRITE_TEST_NAME)).unwrap(), b"garde");
+        // Dossier absent, ou chemin passant sous un fichier : no_folder.
+        let blocker = dir.join("fichier");
+        fs::write(&blocker, b"x").unwrap();
+        assert_eq!(check_writable(&blocker.join("x")), Err(NO_FOLDER));
+        assert_eq!(check_writable(&dir.join("absent")), Err(NO_FOLDER));
     }
 
     #[test]
     fn remove_is_idempotent_and_clears_the_final_file() {
         let tmp = TempDir::new("remove");
         let dir = tmp.path();
-        write_chunk(dir, "r", 0, &b64(b"abc")).unwrap();
-        assert_eq!(remove(dir, "r").unwrap(), json!({ "ok": true }));
-        assert_eq!(remove(dir, "r").unwrap(), json!({ "ok": true }));
-        assert_eq!(size(dir, "r").unwrap()["size"], 0);
-        assert_eq!(locate(dir, "r"), Err(NOT_FOUND));
+        write_chunk(dir, "dl-r", 0, &b64(b"abc")).unwrap();
+        assert_eq!(remove(dir, "dl-r").unwrap(), json!({ "ok": true }));
+        assert_eq!(remove(dir, "dl-r").unwrap(), json!({ "ok": true }));
+        assert_eq!(size(dir, "dl-r").unwrap()["size"], 0);
+        assert_eq!(locate(dir, "dl-r"), Err(NOT_FOUND));
 
-        write_chunk(dir, "s", 0, &b64(&MP4)).unwrap();
-        finalize(dir, "s").unwrap();
-        remove(dir, "s").unwrap();
-        assert!(!dir.join("s.mp4").exists());
+        write_chunk(dir, "dl-s", 0, &b64(&MP4)).unwrap();
+        finalize(dir, "dl-s").unwrap();
+        remove(dir, "dl-s").unwrap();
+        assert!(!dir.join("dl-s.mp4").exists());
     }
 
     #[test]
     fn usage_counts_the_folder_and_reports_free_space() {
         let tmp = TempDir::new("usage");
         let dir = tmp.path();
-        fs::write(dir.join("a.part"), vec![0u8; 10]).unwrap();
-        fs::write(dir.join("b.bin"), vec![0u8; 5]).unwrap();
+        fs::write(dir.join("dl-a.part"), vec![0u8; 10]).unwrap();
+        fs::write(dir.join("dl-b.bin"), vec![0u8; 5]).unwrap();
+        // Un fichier étranger au téléchargement n'est pas compté.
+        fs::write(dir.join("rapport.txt"), vec![0u8; 100]).unwrap();
         let report = usage(dir).unwrap();
         assert_eq!(report["ok"], true);
         assert_eq!(report["used"], 15);
@@ -798,21 +899,28 @@ mod tests {
         let tmp = TempDir::new("params");
         let dir = tmp.path();
         assert_eq!(run_in(dir, "download-inconnu", &json!({})), Err(IO));
-        assert_eq!(write_chunk(dir, "film", 0, &b64(b"x")).unwrap()["ok"], true);
+        assert_eq!(
+            write_chunk(dir, "dl-film", 0, &b64(b"x")).unwrap()["ok"],
+            true
+        );
         assert_eq!(
             run_in(
                 dir,
                 "download-write",
-                &json!({ "id": "film", "data": "eA==" })
+                &json!({ "id": "dl-film", "data": "eA==" })
             ),
             Err(BAD_RANGE)
         );
         assert_eq!(
-            run_in(dir, "download-write", &json!({ "id": "film", "offset": 1 })),
+            run_in(
+                dir,
+                "download-write",
+                &json!({ "id": "dl-film", "offset": 1 })
+            ),
             Err(BAD_DATA)
         );
         assert_eq!(
-            run_in(dir, "download-truncate", &json!({ "id": "film" })),
+            run_in(dir, "download-truncate", &json!({ "id": "dl-film" })),
             Err(BAD_RANGE)
         );
     }
