@@ -486,12 +486,13 @@ fn create_mpv(window_handle: HWND) -> Mpv {
 }
 
 /// Tampon mpv par défaut (niveau « large »), appliqué à l'init avant tout `loadfile`.
+/// `cache-secs` et `demuxer-readahead-secs` sont hauts : seule `demuxer-max-bytes` borne le tampon (une limite en secondes le plafonnerait pour les faibles débits).
 /// L'UI peut le surcharger ensuite via `mpv-set-prop`.
 fn default_buffer_options() -> [(&'static str, &'static str); 6] {
     [
         ("cache", "yes"),
-        ("cache-secs", "120"),
-        ("demuxer-readahead-secs", "120"),
+        ("cache-secs", "3600"),
+        ("demuxer-readahead-secs", "3600"),
         ("demuxer-max-bytes", "512MiB"),
         ("demuxer-max-back-bytes", "64MiB"),
         ("cache-pause-wait", "5"),
@@ -988,8 +989,8 @@ mod tests {
             table,
             [
                 ("cache", "yes"),
-                ("cache-secs", "120"),
-                ("demuxer-readahead-secs", "120"),
+                ("cache-secs", "3600"),
+                ("demuxer-readahead-secs", "3600"),
                 ("demuxer-max-bytes", "512MiB"),
                 ("demuxer-max-back-bytes", "64MiB"),
                 ("cache-pause-wait", "5"),
