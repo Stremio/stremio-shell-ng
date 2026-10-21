@@ -153,11 +153,15 @@ fn probe_once(client: &reqwest::blocking::Client, health: &str) -> Result<(), St
     match client.get(health).send() {
         Ok(response) if response.status().as_u16() < 500 => Ok(()),
         Ok(response) => Err(format!("code HTTP {}", response.status().as_u16())),
-        Err(err) => Err(describe_failure(
-            err.is_timeout(),
-            err.is_connect(),
-            &error_chain(&err),
-        )),
+        Err(err) => {
+            // The URL is already shown by the dialog; its host name must not skew the classification.
+            let err = err.without_url();
+            Err(describe_failure(
+                err.is_timeout(),
+                err.is_connect(),
+                &error_chain(&err),
+            ))
+        }
     }
 }
 
@@ -179,7 +183,7 @@ pub fn probe(url: &str, timeout: Duration, attempts: u32, backoff: Duration) -> 
         }
         if attempt < attempts {
             thread::sleep(wait);
-            wait *= 2;
+            wait = wait.saturating_mul(2);
         }
     }
     Err(format!("{last}, après {attempts} tentative(s)"))
@@ -329,6 +333,24 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let err = probe(&url, Duration::from_millis(200), 1, FAST).unwrap_err();
         assert!(err.starts_with("délai dépassé"), "{}", err);
+    }
+
+    #[test]
+    fn probe_classification_ignores_the_url() {
+        // The server closes the connection without a valid HTTP answer; the path holds words that
+        // would read as a DNS or TLS cause if the URL leaked into the classification.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/ssl-dns-tls", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                stream.read(&mut buf).ok();
+                stream.write_all(b"garbage\r\n\r\n").ok();
+            }
+        });
+        let err = probe(&url, Duration::from_secs(3), 1, FAST).unwrap_err();
+        assert!(!err.contains("ssl-dns-tls"), "{}", err);
+        assert!(err.starts_with("erreur réseau"), "{}", err);
     }
 
     #[test]
