@@ -526,20 +526,10 @@ impl MainWindow {
                     }
                     Some("open-external") => {
                         if let Some(arg) = msg.get_params() {
-                            // FIXME: THIS IS NOT SAFE BY ANY MEANS
-                            // open::that("calc").ok(); does exactly that
+                            // safe_url only lets http(s) links through.
                             let arg = arg.as_str().unwrap_or("");
-                            let arg_lc = arg.to_lowercase();
-                            if arg_lc.starts_with("http://")
-                                || arg_lc.starts_with("https://")
-                                || arg_lc.starts_with("rtp://")
-                                || arg_lc.starts_with("rtps://")
-                                || arg_lc.starts_with("ftp://")
-                                || arg_lc.starts_with("ipfs://")
-                            {
-                                if let Some(url) = safe_url(arg) {
-                                    open::that(url).ok();
-                                }
+                            if let Some(url) = safe_url(arg) {
+                                open::that(url).ok();
                             }
                         }
                     }
