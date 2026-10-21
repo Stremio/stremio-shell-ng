@@ -22,4 +22,5 @@ pub mod window_helper;
 pub mod window_settings;
 pub use named_pipe::{PipeClient, PipeServer};
 pub mod constants;
+pub mod downloads;
 pub mod updater;

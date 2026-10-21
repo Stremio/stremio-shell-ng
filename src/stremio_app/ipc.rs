@@ -108,6 +108,12 @@ impl RPCResponse {
                             "".to_string(),
                             "true".to_string(),
                         ],
+                        vec![
+                            "".to_string(),
+                            "downloadStore".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
                     ],
                     signals: vec![],
                     methods: vec![vec!["onEvent".to_string(), "".to_string()]],
@@ -164,6 +170,10 @@ impl RPCResponse {
     pub fn native_range_caps(payload: serde_json::Value) -> String {
         Self::response_message(Some(json!(["native-range-caps", payload])))
     }
+    /// Réponse d'une méthode `download-*` (voir downloads.rs) : `["nom-de-méthode", {ok, ...}]`.
+    pub fn download_reply(method: &str, payload: serde_json::Value) -> String {
+        Self::response_message(Some(json!([method, payload])))
+    }
     pub fn cache_directory_selected(
         request_id: u64,
         result: Result<Option<String>, String>,
@@ -177,5 +187,22 @@ impl RPCResponse {
             "path": path,
             "error": error,
         }])))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handshake_announces_the_download_store() {
+        let wire: serde_json::Value =
+            serde_json::from_str(&RPCResponse::get_handshake(None)).unwrap();
+        let properties = wire["data"]["transport"]["properties"].as_array().unwrap();
+        let announced = properties
+            .iter()
+            .find(|entry| entry[1] == "downloadStore")
+            .map(|entry| entry[3].clone());
+        assert_eq!(announced, Some(json!("true")));
     }
 }

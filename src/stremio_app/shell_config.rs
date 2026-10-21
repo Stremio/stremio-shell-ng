@@ -2,7 +2,7 @@
 //! local service (embedded lastAddon) or a custom URL, from `%APPDATA%\Laststream\shell.json`
 //! (`{"server":"public"|"local"|"<url>"}`).
 
-use std::{fs, path::PathBuf, thread, time::Duration};
+use std::{fs, io, path::PathBuf, thread, time::Duration};
 use url::Url;
 
 /// Public Laststream service (web interface and API). The only place to change for a new domain.
@@ -101,6 +101,72 @@ pub fn load() -> Target {
     config_path()
         .and_then(|path| fs::read_to_string(path).ok())
         .map_or(Target::Public, |json| parse(&json))
+}
+
+/// Clé de `shell.json` : dossier des téléchargements choisi par l'utilisateur (absente = dossier par défaut, ODY-201).
+const DOWNLOADS_KEY: &str = "downloads_dir";
+
+/// Dossier des téléchargements enregistré dans `shell.json`, s'il y en a un.
+pub fn downloads_dir() -> Option<String> {
+    let json = fs::read_to_string(config_path()?).ok()?;
+    parse_downloads_dir(&json)
+}
+
+/// Lit `downloads_dir` ; clé absente, vide, non textuelle ou fichier illisible donnent `None`.
+pub fn parse_downloads_dir(json: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(strip_bom(json)).ok()?;
+    value
+        .get(DOWNLOADS_KEY)?
+        .as_str()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+}
+
+/// Enregistre `path` comme dossier des téléchargements dans `shell.json`, les autres clés étant conservées.
+pub fn save_downloads_dir(path: &str) -> io::Result<()> {
+    let file = config_path()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no configuration directory"))?;
+    let current = match fs::read_to_string(&file) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let updated = with_downloads_dir(current.as_deref(), path)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Écriture dans un fichier temporaire puis remplacement : un arrêt en cours d'écriture ne tronque pas la config.
+    let temp = file.with_extension("json.tmp");
+    fs::write(&temp, updated)?;
+    fs::rename(&temp, &file)
+}
+
+/// Contenu de `shell.json` avec `downloads_dir` mis à jour. Un fichier vide compte comme `{}` ; un fichier qui n'est
+/// pas un objet JSON est refusé plutôt que remplacé, pour ne perdre aucune clé.
+fn with_downloads_dir(current: Option<&str>, path: &str) -> io::Result<String> {
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message.to_owned());
+    let mut value = match current
+        .map(|text| strip_bom(text).trim())
+        .filter(|text| !text.is_empty())
+    {
+        None => serde_json::Value::Object(serde_json::Map::new()),
+        Some(text) => serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|error| invalid(&format!("shell.json is not valid JSON: {error}")))?,
+    };
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| invalid("shell.json is not a JSON object"))?;
+    object.insert(
+        DOWNLOADS_KEY.to_owned(),
+        serde_json::Value::String(path.to_owned()),
+    );
+    serde_json::to_string_pretty(&value).map_err(|error| invalid(&error.to_string()))
+}
+
+/// Retire la marque d'ordre des octets UTF-8 qu'écrit parfois un éditeur Windows.
+fn strip_bom(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}')
 }
 
 /// Cause of a failed attempt, in French (it is shown in the error dialog).
@@ -266,6 +332,58 @@ mod tests {
     }
 
     const FAST: Duration = Duration::from_millis(20);
+
+    #[test]
+    fn downloads_dir_is_optional_and_read_leniently() {
+        assert_eq!(parse_downloads_dir(""), None);
+        assert_eq!(parse_downloads_dir("pas du json"), None);
+        assert_eq!(parse_downloads_dir("{}"), None);
+        assert_eq!(parse_downloads_dir(r#"{"server":"local"}"#), None);
+        assert_eq!(parse_downloads_dir(r#"{"downloads_dir":""}"#), None);
+        assert_eq!(parse_downloads_dir(r#"{"downloads_dir":3}"#), None);
+        assert_eq!(
+            parse_downloads_dir(r#"{"downloads_dir":"  D:\\Films  "}"#),
+            Some(r"D:\Films".to_owned())
+        );
+    }
+
+    #[test]
+    fn saving_the_folder_keeps_the_other_keys() {
+        let saved =
+            with_downloads_dir(Some(r#"{"server":"local","autre":{"a":1}}"#), r"D:\Films").unwrap();
+        assert_eq!(parse_downloads_dir(&saved), Some(r"D:\Films".to_owned()));
+        assert_eq!(parse(&saved), Target::Local);
+        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(value["autre"]["a"], 1);
+        // Un second enregistrement remplace la valeur sans rien perdre.
+        let again = with_downloads_dir(Some(saved.as_str()), r"E:\Autre").unwrap();
+        assert_eq!(parse_downloads_dir(&again), Some(r"E:\Autre".to_owned()));
+        assert_eq!(parse(&again), Target::Local);
+    }
+
+    #[test]
+    fn saving_creates_the_key_in_a_missing_or_empty_file() {
+        for current in [None, Some(""), Some("  \n")] {
+            let saved = with_downloads_dir(current, r"C:\Dossier").unwrap();
+            assert_eq!(parse_downloads_dir(&saved), Some(r"C:\Dossier".to_owned()));
+            assert_eq!(parse(&saved), Target::Public);
+        }
+    }
+
+    #[test]
+    fn saving_never_overwrites_a_file_it_cannot_read() {
+        assert!(with_downloads_dir(Some("pas du json"), r"C:\D").is_err());
+        assert!(with_downloads_dir(Some("[1, 2]"), r"C:\D").is_err());
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_tolerated() {
+        let text = "\u{feff}{\"server\":\"local\"}";
+        assert_eq!(parse_downloads_dir(text), None);
+        let saved = with_downloads_dir(Some(text), r"C:\D").unwrap();
+        assert_eq!(parse(&saved), Target::Local);
+        assert_eq!(parse_downloads_dir(&saved), Some(r"C:\D".to_owned()));
+    }
 
     #[test]
     fn probe_succeeds_on_the_first_answer() {

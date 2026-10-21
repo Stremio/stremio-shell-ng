@@ -32,6 +32,7 @@ use crate::stremio_app::{
         safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_INTERVAL, WEB_ENDPOINT,
         WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
+    downloads,
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
     shell_config,
@@ -74,6 +75,8 @@ pub struct MainWindow {
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
     pub requested_window_op: Arc<Mutex<Option<WindowRequest>>>,
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
+    /// Une demande de sélecteur de dossier des téléchargements est en attente (ODY-201).
+    pub requested_download_folder: Arc<Mutex<bool>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
@@ -84,6 +87,8 @@ pub struct MainWindow {
     pub window_icon: nwg::Icon,
     #[nwg_resource(title: "Choose cache folder", action: nwg::FileDialogAction::OpenDirectory)]
     pub cache_directory_picker: nwg::FileDialog,
+    #[nwg_resource(title: "Choose downloads folder", action: nwg::FileDialogAction::OpenDirectory)]
+    pub download_folder_picker: nwg::FileDialog,
     #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [Self::on_quit(SELF, EVT_DATA)],
@@ -137,6 +142,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
     pub cache_directory_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_download_folder_notice])]
+    pub download_folder_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_remote_probe_notice])]
     pub remote_probe_notice: nwg::Notice,
@@ -361,6 +369,8 @@ impl MainWindow {
         let requested_fullscreen = self.requested_fullscreen.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
+        let requested_download_folder = self.requested_download_folder.clone();
+        let download_folder_sender = self.download_folder_notice.sender();
         let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
 
@@ -377,6 +387,34 @@ impl MainWindow {
                         web_tx_web
                             .send(RPCResponse::get_handshake(local_server_url.as_deref()))
                             .ok();
+                    }
+                    // Téléchargements (ODY-201). Le sélecteur de dossier tourne sur le fil de l'interface ; les autres
+                    // méthodes `download-*` passent une à une par le fil de downloads.rs.
+                    Some("download-folder-pick") => {
+                        let mut pending = requested_download_folder.lock().unwrap();
+                        if *pending {
+                            web_tx_web
+                                .send(RPCResponse::download_reply(
+                                    "download-folder-pick",
+                                    serde_json::json!({
+                                        "ok": false,
+                                        "code": "io",
+                                        "message": "a folder picker is already open",
+                                    }),
+                                ))
+                                .ok();
+                        } else {
+                            *pending = true;
+                            download_folder_sender.notice();
+                        }
+                    }
+                    Some(method) if downloads::is_worker_method(method) => {
+                        let method = method.to_owned();
+                        let params = msg
+                            .args
+                            .and_then(|args| args.into_iter().nth(1))
+                            .unwrap_or(serde_json::Value::Null);
+                        downloads::submit(&method, params, web_tx_web.clone());
                     }
                     Some("pick-cache-directory") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
@@ -882,6 +920,38 @@ impl MainWindow {
                 .send(RPCResponse::cache_directory_selected(
                     request.request_id,
                     result,
+                ))
+                .ok();
+        }
+    }
+    fn on_download_folder_notice(&self) {
+        let requested = std::mem::take(&mut *self.requested_download_folder.lock().unwrap());
+        if !requested {
+            return;
+        }
+        if let Some(directory) = shell_config::downloads_dir() {
+            self.download_folder_picker
+                .set_default_folder(&directory)
+                .ok();
+        }
+        // Boîte modale : boucle imbriquée, aucun verrou n'est tenu pendant qu'elle est ouverte.
+        let selected = if self.download_folder_picker.run(Some(&self.window)) {
+            self.download_folder_picker
+                .get_selected_item()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    path.into_string()
+                        .map(Some)
+                        .map_err(|_| "The selected folder path is not valid Unicode".to_owned())
+                })
+        } else {
+            Ok(None)
+        };
+        if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
+            web_tx
+                .send(RPCResponse::download_reply(
+                    "download-folder-pick",
+                    downloads::finish_pick(selected),
                 ))
                 .ok();
         }
