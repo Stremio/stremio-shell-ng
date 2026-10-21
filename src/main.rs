@@ -89,7 +89,7 @@ fn main() {
         if forwarded {
             exit(0);
         }
-        eprintln!("Failed to forward command to existing Stremio instance; launching new instance");
+        eprintln!("Failed to forward command to existing Laststream instance; launching new instance");
     }
     // END IPC
 
