@@ -140,8 +140,8 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_remote_probe_notice])]
     pub remote_probe_notice: nwg::Notice,
-    /// Result of the last probe of the remote service (`None` while it runs).
-    pub remote_probe_result: Arc<Mutex<Option<bool>>>,
+    /// Result of the last probe of the remote service (`None` while it runs); the error holds the cause.
+    pub remote_probe_result: Arc<Mutex<Option<Result<(), String>>>>,
     /// Page of the remote service to load, from `shell.json` (`None`: local service or explicit URL).
     pub remote_url: RefCell<Option<String>>,
 }
@@ -606,7 +606,7 @@ impl MainWindow {
             self.server.start();
         }
     }
-    /// Probes the remote service in a thread (short timeout) so the splash screen stays responsive.
+    /// Probes the remote service in a thread (several attempts) so the splash screen stays responsive.
     fn probe_remote(&self) {
         let Some(url) = self.remote_url.borrow().clone() else {
             return;
@@ -615,8 +615,13 @@ impl MainWindow {
         let result = self.remote_probe_result.clone();
         let sender = self.remote_probe_notice.sender();
         thread::spawn(move || {
-            let reachable = shell_config::is_reachable(&url, shell_config::PROBE_TIMEOUT);
-            *result.lock().unwrap() = Some(reachable);
+            let outcome = shell_config::probe(
+                &url,
+                shell_config::PROBE_TIMEOUT,
+                shell_config::PROBE_ATTEMPTS,
+                shell_config::PROBE_BACKOFF,
+            );
+            *result.lock().unwrap() = Some(outcome);
             sender.notice();
         });
     }
@@ -624,15 +629,20 @@ impl MainWindow {
         let Some(url) = self.remote_url.borrow().clone() else {
             return;
         };
-        if self.remote_probe_result.lock().unwrap().take() == Some(true) {
-            self.splash_screen.hide();
-            self.navigate_webui(url);
-            return;
-        }
+        let outcome = self.remote_probe_result.lock().unwrap().take();
+        let cause = match outcome {
+            Some(Ok(())) => {
+                self.splash_screen.hide();
+                self.navigate_webui(url);
+                return;
+            }
+            Some(Err(cause)) => cause,
+            None => "aucune réponse de la sonde".to_owned(),
+        };
         self.splash_screen.hide();
         self.on_show();
         let content = format!(
-            "Impossible de joindre le service Laststream ({url}).\n\nVérifiez votre connexion Internet, puis choisissez Réessayer, ou Annuler pour quitter Laststream."
+            "Impossible de joindre le service Laststream ({url}).\n\nCause : {cause}\n\nVérifiez votre connexion Internet, puis choisissez Réessayer, ou Annuler pour quitter Laststream."
         );
         let choice = nwg::modal_message(
             &self.window,

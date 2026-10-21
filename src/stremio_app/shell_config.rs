@@ -2,13 +2,18 @@
 //! local service (embedded lastAddon) or a custom URL, from `%APPDATA%\Laststream\shell.json`
 //! (`{"server":"public"|"local"|"<url>"}`).
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{fs, path::PathBuf, thread, time::Duration};
 use url::Url;
 
 /// Public Laststream service (web interface and API). The only place to change for a new domain.
 pub const PUBLIC_URL: &str = "https://laststream.gtux-prog.workers.dev/";
-/// Short timeout of the start-up probe, so that an offline machine gets the error dialog quickly.
-pub const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout of each attempt of the start-up probe: long enough for a cold DNS/TLS start on the
+/// first launch of a fresh executable (SmartScreen/antivirus scan), still bounded.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Number of automatic attempts before the error dialog (an offline machine fails fast on DNS).
+pub const PROBE_ATTEMPTS: u32 = 3;
+/// Wait before the second attempt; it doubles before each following one.
+pub const PROBE_BACKOFF: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -98,15 +103,90 @@ pub fn load() -> Target {
         .map_or(Target::Public, |json| parse(&json))
 }
 
-/// True when something answers HTTP at `url` within `timeout` (any status: the page itself
-/// decides what to show). False offline, on timeout or on a refused connection.
-pub fn is_reachable(url: &str, timeout: Duration) -> bool {
-    let base = url.trim_end_matches('/');
-    reqwest::blocking::Client::builder()
+/// Cause of a failed attempt, in French (it is shown in the error dialog).
+fn describe_failure(is_timeout: bool, is_connect: bool, chain: &str) -> String {
+    let lower = chain.to_lowercase();
+    let cause = if is_timeout || lower.contains("timed out") {
+        "délai dépassé"
+    } else if lower.contains("dns")
+        || lower.contains("resolve")
+        || lower.contains("no such host")
+        || lower.contains("name or service not known")
+        || lower.contains("nodename")
+    {
+        "résolution DNS impossible"
+    } else if lower.contains("certificate")
+        || lower.contains("tls")
+        || lower.contains("ssl")
+        || lower.contains("handshake")
+    {
+        "échec TLS (certificat ou poignée de main)"
+    } else if lower.contains("refused") {
+        "connexion refusée"
+    } else if is_connect {
+        "connexion impossible"
+    } else {
+        "erreur réseau"
+    };
+    format!("{cause} ({chain})")
+}
+
+/// `Display` of an error with its whole `source()` chain, which holds the real cause.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        let inner_text = inner.to_string();
+        if !text.contains(&inner_text) {
+            text.push_str(": ");
+            text.push_str(&inner_text);
+        }
+        source = inner.source();
+    }
+    text
+}
+
+/// One GET of the health URL. Any answer below 500 means the service is reachable (the page
+/// itself decides what to show); a 5xx (Cloudflare 52x, deploy in progress) and every transport
+/// error fail.
+fn probe_once(client: &reqwest::blocking::Client, health: &str) -> Result<(), String> {
+    match client.get(health).send() {
+        Ok(response) if response.status().as_u16() < 500 => Ok(()),
+        Ok(response) => Err(format!("code HTTP {}", response.status().as_u16())),
+        Err(err) => {
+            // The URL is already shown by the dialog; its host name must not skew the classification.
+            let err = err.without_url();
+            Err(describe_failure(
+                err.is_timeout(),
+                err.is_connect(),
+                &error_chain(&err),
+            ))
+        }
+    }
+}
+
+/// Probes `{url}/health` up to `attempts` times, `timeout` per attempt, waiting `backoff` then
+/// twice as long between attempts. When every attempt fails, the error holds the cause of the last.
+pub fn probe(url: &str, timeout: Duration, attempts: u32, backoff: Duration) -> Result<(), String> {
+    let health = format!("{}/health", url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()
-        .ok()
-        .is_some_and(|client| client.get(format!("{base}/health")).send().is_ok())
+        .map_err(|err| format!("client HTTP indisponible ({})", error_chain(&err)))?;
+    let attempts = attempts.max(1);
+    let mut wait = backoff;
+    let mut last = String::new();
+    for attempt in 1..=attempts {
+        match probe_once(&client, &health) {
+            Ok(()) => return Ok(()),
+            Err(cause) => last = cause,
+        }
+        if attempt < attempts {
+            thread::sleep(wait);
+            wait = wait.saturating_mul(2);
+        }
+    }
+    Err(format!("{last}, après {attempts} tentative(s)"))
 }
 
 #[cfg(test)]
@@ -166,21 +246,134 @@ mod tests {
         assert_eq!(plan.remote_url, None);
     }
 
-    #[test]
-    fn probe_follows_the_reachability() {
+    /// Answers one connection per entry of `statuses`, then closes the listener (the port refuses).
+    fn serve(statuses: &'static [u16]) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 512];
-                stream.read(&mut buf).ok();
-                stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                    .ok();
+            for status in statuses {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 512];
+                    stream.read(&mut buf).ok();
+                    let reply = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                    );
+                    stream.write_all(reply.as_bytes()).ok();
+                }
             }
         });
-        assert!(is_reachable(&url, Duration::from_secs(3)));
-        // The listener is gone: the port refuses connections.
-        assert!(!is_reachable(&url, Duration::from_millis(800)));
+        url
+    }
+
+    const FAST: Duration = Duration::from_millis(20);
+
+    #[test]
+    fn probe_succeeds_on_the_first_answer() {
+        let url = serve(&[200]);
+        assert_eq!(probe(&url, Duration::from_secs(3), 3, FAST), Ok(()));
+    }
+
+    #[test]
+    fn probe_recovers_from_a_transient_failure() {
+        let url = serve(&[503, 200]);
+        assert_eq!(probe(&url, Duration::from_secs(3), 3, FAST), Ok(()));
+    }
+
+    #[test]
+    fn probe_accepts_a_client_error_status() {
+        // A custom server without /health still serves the page.
+        let url = serve(&[404]);
+        assert_eq!(probe(&url, Duration::from_secs(3), 1, FAST), Ok(()));
+    }
+
+    #[test]
+    fn probe_reports_the_http_status_after_all_attempts() {
+        let url = serve(&[502, 502]);
+        let err = probe(&url, Duration::from_secs(3), 2, FAST).unwrap_err();
+        assert!(err.contains("code HTTP 502"), "{}", err);
+        assert!(err.contains("2 tentative"), "{}", err);
+    }
+
+    #[test]
+    fn probe_fails_when_nothing_listens() {
+        let url = serve(&[]);
+        thread::sleep(Duration::from_millis(100));
+        let err = probe(&url, Duration::from_millis(800), 2, FAST).unwrap_err();
+        assert!(err.contains("2 tentative"), "{}", err);
+        // Windows reports a closed port after ~2 s of SYN retries: a timeout here, a refusal elsewhere.
+        assert!(
+            ["délai dépassé", "connexion refusée", "connexion impossible"]
+                .iter()
+                .any(|cause| err.starts_with(cause)),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn probe_waits_between_attempts_with_a_growing_delay() {
+        let url = serve(&[]);
+        thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        probe(
+            &url,
+            Duration::from_millis(800),
+            3,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        // 100 ms then 200 ms between three attempts.
+        assert!(started.elapsed() >= Duration::from_millis(300));
+    }
+
+    #[test]
+    fn probe_reports_a_timeout() {
+        // Accepts connections (backlog) but never answers.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let err = probe(&url, Duration::from_millis(200), 1, FAST).unwrap_err();
+        assert!(err.starts_with("délai dépassé"), "{}", err);
+    }
+
+    #[test]
+    fn probe_classification_ignores_the_url() {
+        // The server closes the connection without a valid HTTP answer; the path holds words that
+        // would read as a DNS or TLS cause if the URL leaked into the classification.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/ssl-dns-tls", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                stream.read(&mut buf).ok();
+                stream.write_all(b"garbage\r\n\r\n").ok();
+            }
+        });
+        let err = probe(&url, Duration::from_secs(3), 1, FAST).unwrap_err();
+        assert!(!err.contains("ssl-dns-tls"), "{}", err);
+        assert!(err.starts_with("erreur réseau"), "{}", err);
+    }
+
+    #[test]
+    fn failure_causes_are_classified() {
+        assert!(describe_failure(true, true, "x").starts_with("délai dépassé"));
+        assert!(
+            describe_failure(false, true, "dns error: failed to lookup address")
+                .starts_with("résolution DNS impossible")
+        );
+        assert!(
+            describe_failure(false, true, "invalid peer certificate: UnknownIssuer")
+                .starts_with("échec TLS")
+        );
+        assert!(describe_failure(
+            false,
+            true,
+            "tcp connect error: Connection refused (os error 10061)"
+        )
+        .starts_with("connexion refusée"));
+        assert!(
+            describe_failure(false, true, "tcp connect error: unreachable")
+                .starts_with("connexion impossible")
+        );
+        assert!(describe_failure(false, false, "connection closed").starts_with("erreur réseau"));
     }
 }
