@@ -9,11 +9,22 @@ use std::time::Duration;
 
 /// Hôtes autorisés : API AllDebrid et TorBox, plus leurs domaines de fichiers (suffixes).
 const ALLOWED_HOSTS: &[&str] = &["api.alldebrid.com", "api.torbox.app"];
-const ALLOWED_SUFFIXES: &[&str] = &[".debrid.it", ".alldebrid.com", ".torbox.app", ".real-debrid.com"];
+const ALLOWED_SUFFIXES: &[&str] = &[
+    ".debrid.it",
+    ".alldebrid.com",
+    ".torbox.app",
+    ".real-debrid.com",
+];
 /// En-têtes de requête transmis (tout le reste est ignoré).
 const ALLOWED_REQUEST_HEADERS: &[&str] = &["authorization", "content-type", "range", "accept"];
 /// En-têtes de réponse renvoyés à la page.
-pub const RESPONSE_HEADERS: &[&str] = &["content-type", "content-range", "content-length", "retry-after", "accept-ranges"];
+pub const RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "content-range",
+    "content-length",
+    "retry-after",
+    "accept-ranges",
+];
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 20_000;
@@ -41,10 +52,18 @@ pub struct NativeHttpRequest {
 /// Vrai si `host` est un domaine de débrideur autorisé. Un suffixe ne couvre jamais le domaine nu.
 pub fn host_allowed(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
-    if host.is_empty() || host.len() > 253 || !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+    if host.is_empty()
+        || host.len() > 253
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
         return false;
     }
-    ALLOWED_HOSTS.contains(&host.as_str()) || ALLOWED_SUFFIXES.iter().any(|s| host.ends_with(s) && host.len() > s.len())
+    ALLOWED_HOSTS.contains(&host.as_str())
+        || ALLOWED_SUFFIXES
+            .iter()
+            .any(|s| host.ends_with(s) && host.len() > s.len())
 }
 
 /// URL https d'un hôte autorisé, sans identifiants ni port autre que 443.
@@ -82,17 +101,26 @@ pub fn run(req: &NativeHttpRequest) -> Value {
         Some(m) => m,
         None => return error_reply(req.request_id, "method_not_allowed"),
     };
-    let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
+    let timeout = Duration::from_millis(
+        req.timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS),
+    );
     // Redirections suivies seulement vers un hôte autorisé (3 au plus).
     let policy = reqwest::redirect::Policy::custom(|attempt| {
-        let allowed = attempt.url().scheme() == "https" && attempt.url().host_str().map(host_allowed).unwrap_or(false);
+        let allowed = attempt.url().scheme() == "https"
+            && attempt.url().host_str().map(host_allowed).unwrap_or(false);
         if attempt.previous().len() >= 3 || !allowed {
             attempt.stop()
         } else {
             attempt.follow()
         }
     });
-    let client = match reqwest::blocking::Client::builder().timeout(timeout).redirect(policy).build() {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .redirect(policy)
+        .build()
+    {
         Ok(c) => c,
         Err(_) => return error_reply(req.request_id, "client"),
     };
@@ -129,7 +157,11 @@ pub fn run(req: &NativeHttpRequest) -> Value {
     }
     let mut bytes = Vec::new();
     use std::io::Read;
-    if response.take(MAX_RESPONSE_BYTES as u64 + 1).read_to_end(&mut bytes).is_err() {
+    if response
+        .take(MAX_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return error_reply(req.request_id, "network");
     }
     if bytes.len() > MAX_RESPONSE_BYTES {
@@ -149,10 +181,28 @@ mod tests {
 
     #[test]
     fn hosts_are_limited_to_debrid_domains() {
-        for ok in ["api.alldebrid.com", "e1.debrid.it", "x.alldebrid.com", "api.torbox.app", "store-1.eu.torbox.app", "api.real-debrid.com", "20-4.download.real-debrid.com"] {
+        for ok in [
+            "api.alldebrid.com",
+            "e1.debrid.it",
+            "x.alldebrid.com",
+            "api.torbox.app",
+            "store-1.eu.torbox.app",
+            "api.real-debrid.com",
+            "20-4.download.real-debrid.com",
+        ] {
             assert!(host_allowed(ok), "{}", ok);
         }
-        for ko in ["debrid.it", "evil.com", "alldebrid.com.evil.com", "torbox.app", "real-debrid.com", "a.debrid.it.evil.com", "127.0.0.1", "", "api.alldebrid.com@evil.com"] {
+        for ko in [
+            "debrid.it",
+            "evil.com",
+            "alldebrid.com.evil.com",
+            "torbox.app",
+            "real-debrid.com",
+            "a.debrid.it.evil.com",
+            "127.0.0.1",
+            "",
+            "api.alldebrid.com@evil.com",
+        ] {
             assert!(!host_allowed(ko), "{}", ko);
         }
     }
