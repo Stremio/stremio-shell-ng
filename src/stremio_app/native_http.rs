@@ -74,16 +74,43 @@ pub fn host_allowed(host: &str) -> bool {
 /// Une seule adresse non publique refuse l'hôte (`host_not_allowed`). Une résolution vide (DNS indisponible, ou proxy système qui
 /// résout à notre place) n'est pas un refus : la connexion échouera d'elle-même. Contrairement aux liens directs d'addon, la connexion
 /// n'est ni épinglée ni coupée du proxy système, pour ne pas casser les réseaux d'entreprise : seuls les domaines de l'allowlist,
-/// que ni l'addon ni la page ne contrôlent, restent exposés à une course entre cette vérification et la connexion.
+/// que ni l'addon ni la page ne contrôlent, restent exposés à une course entre cette vérification et la connexion (TLS vérifie de toute
+/// façon le certificat du débrideur : aucune requête n'aboutit sur un service local).
+///
+/// Deux tolérances propres à cette famille d'hôtes, pour ne pas faire passer un problème de réseau pour un lien mort :
+/// - `198.18.0.0/15` (plage « benchmark », donc non publique pour les liens directs) est la plage « fake-ip » des proxys en mode TUN
+///   (Clash, sing-box, Surge…) : leur DNS local y répond pour tous les noms, puis le proxy relaie ;
+/// - un bloqueur DNS (Pi-hole) répond `0.0.0.0` ou `::` : c'est `network`, pas un refus de politique.
 pub fn debrid_resolution_ok(
     host: &str,
     resolver: &dyn Fn(&str) -> Vec<IpAddr>,
 ) -> Result<(), &'static str> {
-    if resolver(host).into_iter().all(ip_is_public) {
+    let ips = resolver(host);
+    if !ips.is_empty() && ips.iter().all(|ip| ip.is_unspecified()) {
+        return Err("network");
+    }
+    if ips.into_iter().all(|ip| ip_is_public(ip) || is_fake_ip(ip)) {
         Ok(())
     } else {
         Err("host_not_allowed")
     }
+}
+
+/// Plage `198.18.0.0/15` (RFC 2544, utilisée comme « fake-ip » par les proxys TUN).
+fn is_fake_ip(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 198 && matches!(v4.octets()[1], 18 | 19))
+}
+
+/// Une redirection d'un transfert débrideur n'est suivie que vers un hôte de l'allowlist, en https:443 sans identifiants, dont la
+/// résolution est acceptée par `debrid_resolution_ok`.
+fn debrid_redirect_ok(target: &url::Url, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> bool {
+    target.scheme() == "https"
+        && target.username().is_empty()
+        && target.password().is_none()
+        && matches!(target.port(), None | Some(443))
+        && target
+            .host_str()
+            .is_some_and(|h| host_allowed(h) && debrid_resolution_ok(h, resolver).is_ok())
 }
 
 /// URL https d'un hôte autorisé, sans identifiants ni port autre que 443.
@@ -131,14 +158,7 @@ pub fn run(req: &NativeHttpRequest) -> Value {
     );
     // Redirections suivies seulement vers un hôte autorisé en https:443 sans identifiants, dont la résolution est publique (3 au plus).
     let policy = reqwest::redirect::Policy::custom(|attempt| {
-        let target = attempt.url();
-        let allowed = target.scheme() == "https"
-            && target.username().is_empty()
-            && target.password().is_none()
-            && matches!(target.port(), None | Some(443))
-            && target.host_str().is_some_and(|h| {
-                host_allowed(h) && debrid_resolution_ok(h, &system_resolver).is_ok()
-            });
+        let allowed = debrid_redirect_ok(attempt.url(), &system_resolver);
         if attempt.previous().len() >= 3 || !allowed {
             attempt.stop()
         } else {
@@ -266,7 +286,6 @@ mod tests {
             "192.168.1.20",
             "169.254.169.254",
             "100.64.0.1",
-            "0.0.0.0",
             "::1",
             "fe80::1",
             "fd00::5",
@@ -287,6 +306,59 @@ mod tests {
         );
         // DNS indisponible : pas un refus de politique, la connexion échouera d'elle-même.
         assert_eq!(debrid_resolution_ok(host, &|_| Vec::new()), Ok(()));
+        // Proxy TUN « fake-ip » (198.18.0.0/15) : toléré pour un débrideur, jamais pour un lien direct.
+        assert_eq!(debrid_resolution_ok(host, &ips(&["198.18.0.5"])), Ok(()));
+        assert_eq!(debrid_resolution_ok(host, &ips(&["198.19.255.1"])), Ok(()));
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["198.20.0.1"])),
+            Ok(()),
+            "198.20.0.1 est public"
+        );
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["198.18.0.5", "10.0.0.1"])),
+            Err("host_not_allowed")
+        );
+        assert!(!crate::stremio_app::addon_http::ip_is_public(
+            "198.18.0.5".parse().unwrap()
+        ));
+        // Bloqueur DNS : adresse nulle = problème de réseau, pas un lien mort.
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["0.0.0.0"])),
+            Err("network")
+        );
+        assert_eq!(debrid_resolution_ok(host, &ips(&["::"])), Err("network"));
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["0.0.0.0", "10.0.0.1"])),
+            Err("host_not_allowed")
+        );
+    }
+
+    #[test]
+    fn debrid_redirects_keep_the_same_rules() {
+        let public = |_: &str| vec!["93.184.216.34".parse::<IpAddr>().unwrap()];
+        let private = |_: &str| vec!["192.168.1.9".parse::<IpAddr>().unwrap()];
+        let url = |s: &str| url::Url::parse(s).unwrap();
+        assert!(debrid_redirect_ok(
+            &url("https://e1.alldebrid.com/f"),
+            &public
+        ));
+        for ko in [
+            "http://e1.alldebrid.com/f",
+            "https://e1.alldebrid.com:8443/f",
+            "https://u:p@e1.alldebrid.com/f",
+            "https://evil.com/f",
+            "https://127.0.0.1/f",
+            "https://[::1]/f",
+            "https://localhost/f",
+            "https://nas.local/f",
+        ] {
+            assert!(!debrid_redirect_ok(&url(ko), &public), "{}", ko);
+        }
+        // Hôte de l'allowlist dont le DNS mène au réseau local : redirection arrêtée.
+        assert!(!debrid_redirect_ok(
+            &url("https://e1.alldebrid.com/f"),
+            &private
+        ));
     }
 
     #[test]

@@ -630,7 +630,6 @@ mod tests {
             "192.168.0.10",
             "169.254.169.254",
             "100.64.0.1",
-            "0.0.0.0",
             "::1",
             "fe80::1",
             "fd12::1",
@@ -657,6 +656,23 @@ mod tests {
                 &resolves_to(&["93.184.216.34", "10.0.0.1"])
             ),
             Err("host_not_allowed")
+        );
+        // Plage « fake-ip » des proxys TUN : refusée pour un lien direct, tolérée pour un débrideur ; adresse nulle (Pi-hole) : `network`.
+        assert_eq!(
+            plan_connection("cdn.example.com", &resolves_to(&["198.18.0.5"])),
+            Err("host_not_allowed")
+        );
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &resolves_to(&["198.18.0.5"])),
+            Ok(Connection::Default)
+        );
+        assert_eq!(
+            plan_connection("cdn.example.com", &resolves_to(&["0.0.0.0"])),
+            Err("host_not_allowed")
+        );
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &resolves_to(&["0.0.0.0"])),
+            Err("network")
         );
         // Débrideur : résolution publique = connexion ordinaire (ni épinglage ni coupure du proxy).
         assert_eq!(
