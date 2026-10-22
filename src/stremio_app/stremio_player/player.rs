@@ -474,6 +474,7 @@ fn create_mpv(window_handle: HWND) -> Mpv {
                 ("cscale", "spline36"),
             ]);
         }
+        options.extend(default_buffer_options());
         for (name, value) in options {
             if let Err(error) = initializer.set_property(name, value) {
                 eprintln!("mpv: cannot set {name}={value}: {error:?}");
@@ -482,6 +483,20 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         Ok(())
     });
     mpv.expect("cannot build MPV")
+}
+
+/// Tampon mpv par défaut (niveau « large »), appliqué à l'init avant tout `loadfile`.
+/// `cache-secs` et `demuxer-readahead-secs` sont hauts : seule `demuxer-max-bytes` borne le tampon (une limite en secondes le plafonnerait pour les faibles débits).
+/// L'UI peut le surcharger ensuite via `mpv-set-prop`.
+fn default_buffer_options() -> [(&'static str, &'static str); 6] {
+    [
+        ("cache", "yes"),
+        ("cache-secs", "3600"),
+        ("demuxer-readahead-secs", "3600"),
+        ("demuxer-max-bytes", "512MiB"),
+        ("demuxer-max-back-bytes", "64MiB"),
+        ("cache-pause-wait", "5"),
+    ]
 }
 
 fn create_display_output_thread(
@@ -931,7 +946,7 @@ fn create_message_thread(
 
 #[cfg(test)]
 mod tests {
-    use super::VideoReadyState;
+    use super::{default_buffer_options, VideoReadyState};
 
     #[test]
     fn ready_follows_file_loaded_restart_once() {
@@ -965,5 +980,39 @@ mod tests {
         state.begin_transition(false);
         state.file_loaded();
         assert_eq!(state.playback_restarted(), None);
+    }
+
+    #[test]
+    fn default_buffer_table_is_the_large_level() {
+        let table = default_buffer_options();
+        assert_eq!(
+            table,
+            [
+                ("cache", "yes"),
+                ("cache-secs", "3600"),
+                ("demuxer-readahead-secs", "3600"),
+                ("demuxer-max-bytes", "512MiB"),
+                ("demuxer-max-back-bytes", "64MiB"),
+                ("cache-pause-wait", "5"),
+            ]
+        );
+        let mut names: Vec<_> = table.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), table.len());
+    }
+
+    #[test]
+    fn default_demuxer_max_bytes_is_a_mib_size() {
+        let table = default_buffer_options();
+        let value = table
+            .iter()
+            .find(|(name, _)| *name == "demuxer-max-bytes")
+            .map(|(_, value)| *value)
+            .expect("demuxer-max-bytes is set");
+        let mib = value
+            .strip_suffix("MiB")
+            .and_then(|n| n.parse::<u64>().ok());
+        assert_eq!(mib, Some(512));
     }
 }
