@@ -1,8 +1,14 @@
 //! Pont de lecture par plages « native-range » : lit depuis cet appareil un fichier débridé par tranches `Range`, sans tout charger d'un coup.
-//! Deux familles d'hôtes, HTTPS:443 seulement, sans identifiants : les débrideurs et leurs CDN (allowlist de native_http.rs) et les liens
-//! directs d'addon, sur un hôte nominatif (pas d'IP littérale) qui ne résout que vers des adresses publiques (vérifié après résolution DNS,
-//! connexion épinglée sur ces adresses : ni LAN ni serveur local). GET uniquement, en-tête
-//! `Range: bytes=a-b` obligatoire, plage <= 8 Mo, 3 redirections au plus (chaque saut revalidé selon les mêmes règles). Un 200 n'est accepté que si le corps
+//! Deux familles d'hôtes, HTTPS:443 seulement, sans identifiants, uniquement depuis cet appareil (jamais depuis un serveur) :
+//! - les débrideurs et leurs CDN (allowlist de native_http.rs) : le nom doit aussi se résoudre vers des adresses publiques
+//!   (une adresse privée, loopback ou lien local refuse l'hôte), sans épinglage ni coupure du proxy système ;
+//! - les liens directs d'addon, sur un hôte nominatif (pas d'IP littérale, ni `localhost`, `.local`, `.internal`, `.localhost`) qui
+//!   ne résout que vers des adresses publiques (vérifié après résolution DNS, connexion épinglée sur ces adresses : ni LAN ni serveur local).
+//!
+//! GET uniquement, en-tête `Range: bytes=a-b` obligatoire, plage <= 8 Mo, 3 redirections au plus. Chaque saut (lien initial, puis chaque
+//! `Location`) est revalidé selon les mêmes règles : schéma https, port 443, sans identifiants, hôte permis, puis résolution DNS.
+//! Une cible refusée donne `redirect_not_allowed` (saut) ou `host_not_allowed` (lien initial ou résolution non publique). Côté
+//! téléchargements, la page doit classer ces deux codes en `content` (lien illisible). Un 200 n'est accepté que si le corps
 //! complet, depuis l'octet 0, tient dans la plage demandée ; sinon `range_unsupported`.
 //!
 //! Protocole (signaux vers la page, ids de requête fournis par la page) :
@@ -28,8 +34,10 @@ use std::time::Duration;
 
 use crate::stremio_app::addon_http::{public_named_url, resolve_public_checked, system_resolver};
 use crate::stremio_app::ipc::RPCResponse;
-use crate::stremio_app::native_http::{host_allowed, parse_allowed_url, RESPONSE_HEADERS};
-use std::net::IpAddr;
+use crate::stremio_app::native_http::{
+    debrid_resolution_ok, host_allowed, parse_allowed_url, RESPONSE_HEADERS,
+};
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 const VERSION: u32 = 1;
@@ -111,6 +119,39 @@ pub fn parse_source_url(raw: &str) -> Option<url::Url> {
 /// Une redirection n'est suivie que vers une URL autorisée : mêmes règles que la requête initiale.
 pub fn redirect_allowed(url: &url::Url) -> bool {
     parse_source_url(url.as_str()).is_some()
+}
+
+/// Comment se connecter à un hôte déjà validé (voir `plan_connection`).
+#[derive(Debug, PartialEq, Eq)]
+enum Connection {
+    /// Hôte de débrideur : résolution vérifiée publique, connexion ordinaire (proxy système conservé).
+    Default,
+    /// Lien direct d'addon : connexion épinglée sur ces adresses publiques, sans proxy (pas de second DNS exploitable).
+    Pinned(Vec<SocketAddr>),
+}
+
+/// Politique de connexion d'un saut (lien initial ou redirection), sans réseau hors du résolveur injecté.
+/// Les deux familles passent par la résolution DNS : refus (`host_not_allowed`) dès qu'une adresse n'est pas publique ;
+/// `network` si un lien direct ne se résout pas du tout. Les hôtes de débrideur ne sont pas épinglés (voir `debrid_resolution_ok`).
+fn plan_connection(
+    host: &str,
+    resolver: &dyn Fn(&str) -> Vec<IpAddr>,
+) -> Result<Connection, &'static str> {
+    if host_allowed(host) {
+        debrid_resolution_ok(host, resolver)?;
+        Ok(Connection::Default)
+    } else {
+        resolve_public_checked(host, resolver).map(Connection::Pinned)
+    }
+}
+
+/// Cible d'une redirection : l'en-tête `Location` (absolu ou relatif) doit exister, tenir dans le plafond de sauts
+/// (`hop` = rang du saut qui vient de répondre) et respecter les mêmes règles que le lien initial.
+fn next_hop(current: &url::Url, location: Option<&str>, hop: usize) -> Option<url::Url> {
+    if hop >= MAX_REDIRECTS {
+        return None;
+    }
+    current.join(location?).ok().filter(redirect_allowed)
 }
 
 /// Décide si la réponse peut servir la plage. 206 : oui. 200 : seulement si le corps complet (depuis l'octet 0) tient dans la plage.
@@ -272,12 +313,12 @@ fn run_with(
             .redirect(reqwest::redirect::Policy::none())
             .referer(false)
             .https_only(true);
-        if !host_allowed(&host) {
-            // Lien direct : toutes les adresses doivent être publiques, la connexion est épinglée dessus (pas de second DNS exploitable).
-            match resolve_public_checked(&host, resolver) {
-                Ok(addrs) => builder = builder.no_proxy().resolve_to_addrs(&host, &addrs),
-                Err(code) => return error_reply(id, code),
+        match plan_connection(&host, resolver) {
+            Ok(Connection::Pinned(addrs)) => {
+                builder = builder.no_proxy().resolve_to_addrs(&host, &addrs)
             }
+            Ok(Connection::Default) => {}
+            Err(code) => return error_reply(id, code),
         }
         let client = match builder.build() {
             Ok(c) => c,
@@ -297,18 +338,16 @@ fn run_with(
         };
         let status = response.status().as_u16();
         if response.status().is_redirection() {
-            let target = response
+            let location = response
                 .headers()
                 .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|loc| url.join(loc).ok())
-                .filter(redirect_allowed);
-            match target {
-                Some(next) if hop < MAX_REDIRECTS => {
+                .and_then(|v| v.to_str().ok());
+            match next_hop(&url, location, hop) {
+                Some(next) => {
                     url = next;
                     continue;
                 }
-                _ => return error_with_status(id, "redirect_not_allowed", status),
+                None => return error_with_status(id, "redirect_not_allowed", status),
             }
         }
         let content_length = response.content_length();
@@ -503,6 +542,152 @@ mod tests {
         ] {
             assert!(!redirect_allowed(&url::Url::parse(ko).unwrap()), "{}", ko);
         }
+    }
+
+    fn resolves_to(ips: &'static [&'static str]) -> impl Fn(&str) -> Vec<IpAddr> {
+        move |_: &str| ips.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn a_302_to_the_local_network_is_refused() {
+        let base = url::Url::parse("https://files.example.tv/a.mp4").unwrap();
+        for ko in [
+            "http://files.example.tv/b.mp4",
+            "http://cdn.example.com/b.mp4",
+            "https://127.0.0.1/b.mp4",
+            "https://127.1/b.mp4",
+            "https://0x7f000001/b.mp4",
+            "https://2130706433/b.mp4",
+            "https://[::1]/b.mp4",
+            "https://[::ffff:127.0.0.1]/b.mp4",
+            "https://[fe80::1]/b.mp4",
+            "https://10.0.0.5/b.mp4",
+            "https://192.168.1.2/b.mp4",
+            "https://169.254.169.254/latest/meta-data",
+            "https://localhost/b.mp4",
+            "https://localhost./b.mp4",
+            "https://nas.local/b.mp4",
+            "https://box.internal/b.mp4",
+            "https://app.localhost/b.mp4",
+            "https://monnas/b.mp4",
+            "https://u:p@cdn.example.com/b.mp4",
+            "https://cdn.example.com:8443/b.mp4",
+            "https://cdn.example.com:80/b.mp4",
+            "ftp://cdn.example.com/b.mp4",
+            "file:///c:/windows/win.ini",
+            "//127.0.0.1/b.mp4",
+            "//cdn.example.com:8080/b.mp4",
+        ] {
+            assert_eq!(next_hop(&base, Some(ko), 0), None, "{}", ko);
+        }
+        // Sans `Location`, ou illisible : pas de saut.
+        assert_eq!(next_hop(&base, None, 0), None);
+        assert_eq!(next_hop(&base, Some("https://"), 0), None);
+    }
+
+    #[test]
+    fn redirects_follow_valid_targets_up_to_the_hop_cap() {
+        let base = url::Url::parse("https://files.example.tv/dir/a.mp4").unwrap();
+        for (location, expected) in [
+            ("/b.mp4?sig=1", "https://files.example.tv/b.mp4?sig=1"),
+            ("c.mp4", "https://files.example.tv/dir/c.mp4"),
+            (
+                "https://cdn.example.com/b.mp4",
+                "https://cdn.example.com/b.mp4",
+            ),
+            ("//cdn.example.com/b.mp4", "https://cdn.example.com/b.mp4"),
+            (
+                "https://e1.alldebrid.com/b.mp4",
+                "https://e1.alldebrid.com/b.mp4",
+            ),
+        ] {
+            assert_eq!(
+                next_hop(&base, Some(location), 0).map(|u| u.to_string()),
+                Some(expected.to_owned()),
+                "{}",
+                location
+            );
+        }
+        // Au plus 3 redirections : la 4e réponse 3xx n'est pas suivie.
+        assert!(next_hop(&base, Some("/b.mp4"), MAX_REDIRECTS - 1).is_some());
+        assert_eq!(next_hop(&base, Some("/b.mp4"), MAX_REDIRECTS), None);
+    }
+
+    #[test]
+    fn every_hop_is_resolved_and_must_be_public() {
+        // Lien direct : épinglé sur les adresses publiques résolues, port 443.
+        match plan_connection("cdn.example.com", &resolves_to(&["93.184.216.34"])) {
+            Ok(Connection::Pinned(addrs)) => {
+                assert_eq!(addrs, vec!["93.184.216.34:443".parse().unwrap()]);
+            }
+            other => panic!("{:?}", other),
+        }
+        // Rebinding : un nom d'apparence publique (y compris à la 2e redirection) qui se résout vers le réseau local.
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.0.10",
+            "169.254.169.254",
+            "100.64.0.1",
+            "::1",
+            "fe80::1",
+            "fd12::1",
+            "::ffff:10.0.0.1",
+        ] {
+            let resolver = move |_: &str| vec![ip.parse::<IpAddr>().unwrap()];
+            assert_eq!(
+                plan_connection("rebind.example.com", &resolver),
+                Err("host_not_allowed"),
+                "{}",
+                ip
+            );
+            // Un hôte de débrideur n'échappe pas à la règle.
+            assert_eq!(
+                plan_connection("e1.alldebrid.com", &resolver),
+                Err("host_not_allowed"),
+                "{}",
+                ip
+            );
+        }
+        assert_eq!(
+            plan_connection(
+                "rebind.example.com",
+                &resolves_to(&["93.184.216.34", "10.0.0.1"])
+            ),
+            Err("host_not_allowed")
+        );
+        // Plage « fake-ip » des proxys TUN : refusée pour un lien direct, tolérée pour un débrideur ; adresse nulle (Pi-hole) : `network`.
+        assert_eq!(
+            plan_connection("cdn.example.com", &resolves_to(&["198.18.0.5"])),
+            Err("host_not_allowed")
+        );
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &resolves_to(&["198.18.0.5"])),
+            Ok(Connection::Default)
+        );
+        assert_eq!(
+            plan_connection("cdn.example.com", &resolves_to(&["0.0.0.0"])),
+            Err("host_not_allowed")
+        );
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &resolves_to(&["0.0.0.0"])),
+            Err("network")
+        );
+        // Débrideur : résolution publique = connexion ordinaire (ni épinglage ni coupure du proxy).
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &resolves_to(&["93.184.216.34"])),
+            Ok(Connection::Default)
+        );
+        // DNS indisponible : `network` pour un lien direct ; le débrideur échoue à la connexion.
+        assert_eq!(
+            plan_connection("cdn.example.com", &|_| Vec::new()),
+            Err("network")
+        );
+        assert_eq!(
+            plan_connection("e1.alldebrid.com", &|_| Vec::new()),
+            Ok(Connection::Default)
+        );
     }
 
     #[test]

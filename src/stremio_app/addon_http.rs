@@ -16,6 +16,8 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REDIRECTS: usize = 3;
 const MAX_URL_LEN: usize = 2048;
 const STREAM_TYPES: &[&str] = &["movie", "series", "anime", "tv", "channel"];
+/// Suffixes de noms locaux, refusés sans résolution (miroir de `LOCAL_SUFFIXES` dans linkHosts.ts).
+const LOCAL_SUFFIXES: &[&str] = &[".local", ".internal", ".localhost"];
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +122,8 @@ pub fn public_named_url(raw: &str, max_len: usize) -> Option<url::Url> {
     };
     let host_ok = domain.len() <= 253
         && domain.contains('.')
+        // Noms locaux (mDNS, DNS interne, boucle locale) : refusés avant toute résolution, comme `isAddonLinkUrl` côté page.
+        && !LOCAL_SUFFIXES.iter().any(|s| domain.ends_with(s))
         && !domain.starts_with('.')
         && !domain.ends_with('.')
         && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
@@ -391,6 +395,24 @@ mod tests {
         ] {
             assert!(parse_addon_url(ko).is_none(), "{}", ko);
         }
+    }
+
+    #[test]
+    fn refuses_local_names_without_resolution() {
+        for ko in [
+            "https://nas.local/manifest.json",
+            "https://box.internal/manifest.json",
+            "https://app.localhost/manifest.json",
+            "https://a.b.LOCAL/manifest.json",
+            "https://localhost/manifest.json",
+            "https://monnas/manifest.json",
+        ] {
+            assert!(parse_addon_url(ko).is_none(), "{}", ko);
+            assert!(public_named_url(ko, 2048).is_none(), "{}", ko);
+        }
+        // Un nom qui ne fait que contenir « local » reste un hôte public.
+        assert!(public_named_url("https://localhost-cdn.example.com/f", 2048).is_some());
+        assert!(public_named_url("https://notlocal.example.com/f", 2048).is_some());
     }
 
     #[test]
