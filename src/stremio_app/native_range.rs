@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use crate::stremio_app::ipc::RPCResponse;
 use crate::stremio_app::addon_http::{public_named_url, resolve_public_checked, system_resolver};
+use crate::stremio_app::ipc::RPCResponse;
 use crate::stremio_app::native_http::{host_allowed, parse_allowed_url, RESPONSE_HEADERS};
 use std::net::IpAddr;
 use std::time::Instant;
@@ -93,7 +93,11 @@ pub fn parse_range(raw: &str) -> Option<ByteRange> {
 
 fn requested_range(headers: Option<&HashMap<String, String>>) -> Result<ByteRange, &'static str> {
     let raw = headers
-        .and_then(|h| h.iter().find(|(k, _)| k.eq_ignore_ascii_case("range")).map(|(_, v)| v.as_str()))
+        .and_then(|h| {
+            h.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("range"))
+                .map(|(_, v)| v.as_str())
+        })
         .ok_or("range_required")?;
     parse_range(raw).ok_or("bad_range")
 }
@@ -110,7 +114,11 @@ pub fn redirect_allowed(url: &url::Url) -> bool {
 }
 
 /// Décide si la réponse peut servir la plage. 206 : oui. 200 : seulement si le corps complet (depuis l'octet 0) tient dans la plage.
-pub fn check_status(status: u16, range: ByteRange, content_length: Option<u64>) -> Result<(), &'static str> {
+pub fn check_status(
+    status: u16,
+    range: ByteRange,
+    content_length: Option<u64>,
+) -> Result<(), &'static str> {
     match status {
         206 => Ok(()),
         200 => match content_length {
@@ -138,7 +146,13 @@ fn error_with_status(id: u64, code: &str, status: u16) -> Value {
 }
 
 /// Émet un morceau base64. Renvoie faux si l'annulation est demandée ou si la page ne reçoit plus rien.
-fn emit(id: u64, seq: u64, bytes: &[u8], cancel: &AtomicBool, sink: &mut dyn FnMut(Value) -> bool) -> bool {
+fn emit(
+    id: u64,
+    seq: u64,
+    bytes: &[u8],
+    cancel: &AtomicBool,
+    sink: &mut dyn FnMut(Value) -> bool,
+) -> bool {
     if cancel.load(Ordering::SeqCst) {
         return false;
     }
@@ -205,13 +219,27 @@ fn deliver<R: Read>(
 }
 
 /// Exécute la requête (bloquant : à lancer dans un fil). `sink` reçoit les `native-range-chunk` ; renvoie la charge finale.
-pub fn run(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(Value) -> bool) -> Value {
+pub fn run(
+    req: &NativeRangeRequest,
+    cancel: &AtomicBool,
+    sink: &mut dyn FnMut(Value) -> bool,
+) -> Value {
     run_with(req, cancel, sink, &system_resolver)
 }
 
-fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(Value) -> bool, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Value {
+fn run_with(
+    req: &NativeRangeRequest,
+    cancel: &AtomicBool,
+    sink: &mut dyn FnMut(Value) -> bool,
+    resolver: &dyn Fn(&str) -> Vec<IpAddr>,
+) -> Value {
     let id = req.id;
-    if !req.method.as_deref().unwrap_or("GET").eq_ignore_ascii_case("GET") {
+    if !req
+        .method
+        .as_deref()
+        .unwrap_or("GET")
+        .eq_ignore_ascii_case("GET")
+    {
         return error_reply(id, "method_not_allowed");
     }
     let mut url = match parse_source_url(&req.url) {
@@ -225,7 +253,11 @@ fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(
     if range.size() > MAX_RANGE_BYTES {
         return error_reply(id, "too_large");
     }
-    let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS));
+    let timeout = Duration::from_millis(
+        req.timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS),
+    );
     let started = Instant::now();
     // Redirections suivies à la main (3 au plus) : chaque saut est revalidé et, hors débrideur, résolu vers des adresses publiques.
     for hop in 0..=MAX_REDIRECTS {
@@ -253,7 +285,10 @@ fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(
         };
         let response = match client
             .get(url.clone())
-            .header(reqwest::header::RANGE, format!("bytes={}-{}", range.start, range.end))
+            .header(
+                reqwest::header::RANGE,
+                format!("bytes={}-{}", range.start, range.end),
+            )
             .send()
         {
             Ok(r) => r,
@@ -291,7 +326,12 @@ fn run_with(req: &NativeRangeRequest, cancel: &AtomicBool, sink: &mut dyn FnMut(
             .get(reqwest::header::CONTENT_RANGE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let head = ResponseHead { status, content_range, content_length, headers };
+        let head = ResponseHead {
+            status,
+            content_range,
+            content_length,
+            headers,
+        };
         return deliver(id, range, head, response, cancel, sink);
     }
     error_with_status(id, "redirect_not_allowed", 0)
@@ -347,13 +387,16 @@ pub fn start(req: NativeRangeRequest, reply: flume::Sender<String>) {
     let registration = match Registration::try_new(id) {
         Ok(registration) => registration,
         Err(code) => {
-            reply.send(RPCResponse::native_range_response(error_reply(id, code))).ok();
+            reply
+                .send(RPCResponse::native_range_response(error_reply(id, code)))
+                .ok();
             return;
         }
     };
     let fallback = reply.clone();
     let spawned = thread::Builder::new().spawn(move || {
-        let mut sink = |payload: Value| reply.send(RPCResponse::native_range_chunk(payload)).is_ok();
+        let mut sink =
+            |payload: Value| reply.send(RPCResponse::native_range_chunk(payload)).is_ok();
         let payload = run(&req, &registration.flag, &mut sink);
         // Le créneau est libéré avant d'annoncer la fin : la page peut relancer une lecture dès la réponse reçue.
         drop(registration);
@@ -361,13 +404,21 @@ pub fn start(req: NativeRangeRequest, reply: flume::Sender<String>) {
     });
     if spawned.is_err() {
         // La fermeture non lancée est relâchée avec son enregistrement : l'identifiant redevient libre.
-        fallback.send(RPCResponse::native_range_response(error_reply(id, "spawn_failed"))).ok();
+        fallback
+            .send(RPCResponse::native_range_response(error_reply(
+                id,
+                "spawn_failed",
+            )))
+            .ok();
     }
 }
 
 /// Réponse finale pour une requête `native-range` illisible : l'identifiant est repris s'il est présent, sinon `null`.
 pub fn bad_request(params: Option<&Value>) -> Value {
-    let id = params.and_then(|p| p.get("id")).and_then(Value::as_u64).map_or(Value::Null, Value::from);
+    let id = params
+        .and_then(|p| p.get("id"))
+        .and_then(Value::as_u64)
+        .map_or(Value::Null, Value::from);
     json!({ "id": id, "error": "bad_request" })
 }
 
@@ -389,16 +440,32 @@ mod tests {
 
     fn request(url: &str, range: Option<&str>, method: Option<&str>) -> NativeRangeRequest {
         let headers = range.map(|r| HashMap::from([("Range".to_owned(), r.to_owned())]));
-        NativeRangeRequest { id: 5, url: url.into(), method: method.map(str::to_owned), headers, timeout_ms: None }
+        NativeRangeRequest {
+            id: 5,
+            url: url.into(),
+            method: method.map(str::to_owned),
+            headers,
+            timeout_ms: None,
+        }
     }
 
     fn head(status: u16, content_length: Option<u64>) -> ResponseHead {
-        ResponseHead { status, content_range: Some("bytes 0-0/1".into()), content_length, headers: serde_json::Map::new() }
+        ResponseHead {
+            status,
+            content_range: Some("bytes 0-0/1".into()),
+            content_length,
+            headers: serde_json::Map::new(),
+        }
     }
 
     #[test]
     fn hosts_reuse_the_debrid_allowlist() {
-        for ok in ["https://example.debrid.it/f", "https://e1.example.alldebrid.com/f", "https://x.example.real-debrid.com/f", "https://api.torbox.app/f"] {
+        for ok in [
+            "https://example.debrid.it/f",
+            "https://e1.example.alldebrid.com/f",
+            "https://x.example.real-debrid.com/f",
+            "https://api.torbox.app/f",
+        ] {
             assert!(parse_allowed_url(ok).is_some(), "{}", ok);
         }
         for ko in [
@@ -416,19 +483,40 @@ mod tests {
 
     #[test]
     fn redirects_are_revalidated_per_hop() {
-        assert!(redirect_allowed(&url::Url::parse("https://example.debrid.it/f2").unwrap()));
+        assert!(redirect_allowed(
+            &url::Url::parse("https://example.debrid.it/f2").unwrap()
+        ));
         // Hôte nominatif public : permis (lien direct d'addon), la résolution publique est vérifiée à la connexion.
-        assert!(redirect_allowed(&url::Url::parse("https://cdn.example.com/f2?token=a").unwrap()));
-        for ko in ["http://example.debrid.it/f2", "http://cdn.example.com/f2", "https://127.0.0.1/f2", "https://[::1]/f2", "https://192.168.1.2/f2", "https://localhost/f2", "https://u:p@cdn.example.com/f2", "https://cdn.example.com:8443/f2", "https://2130706433/f2"] {
+        assert!(redirect_allowed(
+            &url::Url::parse("https://cdn.example.com/f2?token=a").unwrap()
+        ));
+        for ko in [
+            "http://example.debrid.it/f2",
+            "http://cdn.example.com/f2",
+            "https://127.0.0.1/f2",
+            "https://[::1]/f2",
+            "https://192.168.1.2/f2",
+            "https://localhost/f2",
+            "https://u:p@cdn.example.com/f2",
+            "https://cdn.example.com:8443/f2",
+            "https://2130706433/f2",
+        ] {
             assert!(!redirect_allowed(&url::Url::parse(ko).unwrap()), "{}", ko);
         }
     }
 
     #[test]
     fn direct_addon_links_are_accepted_with_query_and_long_paths() {
-        assert!(parse_source_url("https://files.example.tv/dl/abc/Film.2024.1080p.mp4?sig=xyz&e=1").is_some());
-        assert!(parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(3000))).is_some());
-        assert!(parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(5000))).is_none());
+        assert!(parse_source_url(
+            "https://files.example.tv/dl/abc/Film.2024.1080p.mp4?sig=xyz&e=1"
+        )
+        .is_some());
+        assert!(
+            parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(3000))).is_some()
+        );
+        assert!(
+            parse_source_url(&format!("https://files.example.tv/{}", "a".repeat(5000))).is_none()
+        );
         assert!(parse_source_url("https://x.real-debrid.com/d/ABC").is_some());
     }
 
@@ -440,16 +528,48 @@ mod tests {
     fn direct_link_resolving_to_a_private_address_is_refused_without_network() {
         let cancel = AtomicBool::new(false);
         let mut sink = |_: Value| true;
-        for ip in ["127.0.0.1", "10.0.0.5", "192.168.1.20", "169.254.1.1", "::1"] {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.20",
+            "169.254.1.1",
+            "::1",
+        ] {
             let ip: IpAddr = ip.parse().unwrap();
-            let fin = run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![ip]);
+            let fin = run_with(
+                &range_request("https://files.example.tv/a.mp4"),
+                &cancel,
+                &mut sink,
+                &|_| vec![ip],
+            );
             assert_eq!(fin["error"], "host_not_allowed", "{}", ip);
         }
         // Une seule adresse privée parmi des publiques suffit à refuser (rebinding).
-        let mixed = |_: &str| vec!["93.184.216.34".parse().unwrap(), "10.0.0.1".parse().unwrap()];
-        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &mixed)["error"], "host_not_allowed");
+        let mixed = |_: &str| {
+            vec![
+                "93.184.216.34".parse().unwrap(),
+                "10.0.0.1".parse().unwrap(),
+            ]
+        };
+        assert_eq!(
+            run_with(
+                &range_request("https://files.example.tv/a.mp4"),
+                &cancel,
+                &mut sink,
+                &mixed
+            )["error"],
+            "host_not_allowed"
+        );
         // Échec de résolution (DNS indisponible) : `network`, pas un refus.
-        assert_eq!(run_with(&range_request("https://files.example.tv/a.mp4"), &cancel, &mut sink, &|_| vec![])["error"], "network");
+        assert_eq!(
+            run_with(
+                &range_request("https://files.example.tv/a.mp4"),
+                &cancel,
+                &mut sink,
+                &|_| vec![]
+            )["error"],
+            "network"
+        );
     }
 
     #[test]
@@ -457,16 +577,42 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let mut sink = |_: Value| true;
         let boom = |_: &str| -> Vec<IpAddr> { panic!("pas de DNS pour un lien refusé") };
-        for ko in ["http://files.example.tv/a.mp4", "https://127.0.0.1/a.mp4", "https://files.example.tv:8443/a", "magnet:?xt=urn:btih:abc", "ftp://files.example.tv/a"] {
-            assert_eq!(run_with(&range_request(ko), &cancel, &mut sink, &boom)["error"], "host_not_allowed", "{}", ko);
+        for ko in [
+            "http://files.example.tv/a.mp4",
+            "https://127.0.0.1/a.mp4",
+            "https://files.example.tv:8443/a",
+            "magnet:?xt=urn:btih:abc",
+            "ftp://files.example.tv/a",
+        ] {
+            assert_eq!(
+                run_with(&range_request(ko), &cancel, &mut sink, &boom)["error"],
+                "host_not_allowed",
+                "{}",
+                ko
+            );
         }
     }
 
     #[test]
     fn range_header_is_strict_single_closed_range() {
-        assert_eq!(parse_range("bytes=0-99"), Some(ByteRange { start: 0, end: 99 }));
+        assert_eq!(
+            parse_range("bytes=0-99"),
+            Some(ByteRange { start: 0, end: 99 })
+        );
         assert_eq!(parse_range("bytes=5-5").map(|r| r.size()), Some(1));
-        for ko in ["bytes=99-0", "bytes=0-", "bytes=-100", "bytes=0-1,3-4", "bytes=a-b", "bytes= 0-1", "bytes=+1-2", "items=0-1", "bytes=0-1-2", "bytes=", "0-1"] {
+        for ko in [
+            "bytes=99-0",
+            "bytes=0-",
+            "bytes=-100",
+            "bytes=0-1,3-4",
+            "bytes=a-b",
+            "bytes= 0-1",
+            "bytes=+1-2",
+            "items=0-1",
+            "bytes=0-1-2",
+            "bytes=",
+            "0-1",
+        ] {
             assert_eq!(parse_range(ko), None, "{}", ko);
         }
         assert_eq!(parse_range("bytes=00000000000000000000001-2"), None);
@@ -478,14 +624,20 @@ mod tests {
         assert_eq!(requested_range(None), Err("range_required"));
         assert_eq!(requested_range(Some(&headers)), Err("range_required"));
         headers.insert("range".to_owned(), "bytes=0-9".to_owned());
-        assert_eq!(requested_range(Some(&headers)), Ok(ByteRange { start: 0, end: 9 }));
+        assert_eq!(
+            requested_range(Some(&headers)),
+            Ok(ByteRange { start: 0, end: 9 })
+        );
         headers.insert("range".to_owned(), "bytes=9-0".to_owned());
         assert_eq!(requested_range(Some(&headers)), Err("bad_range"));
     }
 
     #[test]
     fn partial_content_is_accepted() {
-        let r = ByteRange { start: 100, end: 199 };
+        let r = ByteRange {
+            start: 100,
+            end: 199,
+        };
         assert_eq!(check_status(206, r, Some(100)), Ok(()));
         assert_eq!(check_status(206, r, None), Ok(()));
     }
@@ -494,11 +646,20 @@ mod tests {
     fn full_200_is_accepted_only_when_it_covers_the_content() {
         let whole = ByteRange { start: 0, end: 99 };
         assert_eq!(check_status(200, whole, Some(100)), Ok(()));
-        assert_eq!(check_status(200, ByteRange { start: 0, end: 499 }, Some(100)), Ok(()));
+        assert_eq!(
+            check_status(200, ByteRange { start: 0, end: 499 }, Some(100)),
+            Ok(())
+        );
         // Corps plus grand que la plage : le serveur a ignoré Range sur un fichier entier.
-        assert_eq!(check_status(200, ByteRange { start: 0, end: 49 }, Some(100)), Err("range_unsupported"));
+        assert_eq!(
+            check_status(200, ByteRange { start: 0, end: 49 }, Some(100)),
+            Err("range_unsupported")
+        );
         // Plage décalée : un 200 renvoie toujours le fichier depuis 0, donc jamais la plage demandée.
-        assert_eq!(check_status(200, ByteRange { start: 5, end: 20 }, Some(10)), Err("range_unsupported"));
+        assert_eq!(
+            check_status(200, ByteRange { start: 5, end: 20 }, Some(10)),
+            Err("range_unsupported")
+        );
         assert_eq!(check_status(200, whole, None), Err("range_unsupported"));
     }
 
@@ -512,7 +673,10 @@ mod tests {
     #[test]
     fn body_is_chunked_within_one_mebibyte_of_base64() {
         let body: Vec<u8> = (0..2_000_000u32).map(|i| (i % 251) as u8).collect();
-        let range = ByteRange { start: 0, end: body.len() as u64 - 1 };
+        let range = ByteRange {
+            start: 0,
+            end: body.len() as u64 - 1,
+        };
         let mut out = Vec::new();
         let mut sink = |v: Value| {
             out.push(v);
@@ -533,8 +697,17 @@ mod tests {
             assert_eq!(c["seq"], i as u64);
             assert_eq!(c["last"], false);
             let b64 = c["bodyBase64"].as_str().unwrap();
-            assert!(b64.len() <= MAX_CHUNK_BASE64, "chunk {} is {} chars", i, b64.len());
-            joined.extend(base64::engine::general_purpose::STANDARD.decode(b64).unwrap());
+            assert!(
+                b64.len() <= MAX_CHUNK_BASE64,
+                "chunk {} is {} chars",
+                i,
+                b64.len()
+            );
+            joined.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .unwrap(),
+            );
         }
         assert_eq!(joined, body);
     }
@@ -547,7 +720,14 @@ mod tests {
             true
         };
         let cancel = AtomicBool::new(false);
-        let fin = deliver(3, ByteRange { start: 0, end: 9 }, head(206, Some(0)), &[0u8; 0][..], &cancel, &mut sink);
+        let fin = deliver(
+            3,
+            ByteRange { start: 0, end: 9 },
+            head(206, Some(0)),
+            &[0u8; 0][..],
+            &cancel,
+            &mut sink,
+        );
         assert_eq!(fin["chunks"], 0);
         assert_eq!(fin["contentLength"], 0);
         assert!(out.is_empty());
@@ -558,10 +738,24 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let mut sink = |_: Value| true;
         let body = [1u8; 11];
-        let fin = deliver(3, ByteRange { start: 0, end: 9 }, head(206, None), &body[..], &cancel, &mut sink);
+        let fin = deliver(
+            3,
+            ByteRange { start: 0, end: 9 },
+            head(206, None),
+            &body[..],
+            &cancel,
+            &mut sink,
+        );
         assert_eq!(fin["error"], "too_large");
         // Content-Length annoncé trop grand : refus avant toute lecture.
-        let fin = deliver(3, ByteRange { start: 0, end: 9 }, head(206, Some(11)), &body[..], &cancel, &mut sink);
+        let fin = deliver(
+            3,
+            ByteRange { start: 0, end: 9 },
+            head(206, Some(11)),
+            &body[..],
+            &cancel,
+            &mut sink,
+        );
         assert_eq!(fin["error"], "too_large");
         assert_eq!(fin["status"], 206);
     }
@@ -574,7 +768,14 @@ mod tests {
             out.push(v);
             true
         };
-        let fin = deliver(4, ByteRange { start: 0, end: 9 }, head(206, Some(10)), &[1u8; 10][..], &cancel, &mut sink);
+        let fin = deliver(
+            4,
+            ByteRange { start: 0, end: 9 },
+            head(206, Some(10)),
+            &[1u8; 10][..],
+            &cancel,
+            &mut sink,
+        );
         assert_eq!(fin["error"], "cancelled");
         assert!(out.is_empty());
     }
@@ -589,8 +790,18 @@ mod tests {
             cancel.store(true, Ordering::SeqCst);
             true
         };
-        let range = ByteRange { start: 0, end: body.len() as u64 - 1 };
-        let fin = deliver(4, range, head(206, Some(body.len() as u64)), &body[..], &cancel, &mut sink);
+        let range = ByteRange {
+            start: 0,
+            end: body.len() as u64 - 1,
+        };
+        let fin = deliver(
+            4,
+            range,
+            head(206, Some(body.len() as u64)),
+            &body[..],
+            &cancel,
+            &mut sink,
+        );
         assert_eq!(fin["error"], "cancelled");
         assert_eq!(out.len(), 1);
     }
@@ -607,11 +818,41 @@ mod tests {
     fn invalid_requests_are_refused_without_network() {
         let cancel = AtomicBool::new(false);
         let mut sink = |_: Value| true;
-        let check = |r: NativeRangeRequest, sink: &mut dyn FnMut(Value) -> bool| run(&r, &cancel, sink)["error"].clone();
-        assert_eq!(check(request("https://example.debrid.it/f", Some("bytes=0-9"), Some("POST")), &mut sink), "method_not_allowed");
-        assert_eq!(check(request("https://127.0.0.1/f", Some("bytes=0-9"), None), &mut sink), "host_not_allowed");
-        assert_eq!(check(request("https://example.debrid.it/f", None, None), &mut sink), "range_required");
-        assert_eq!(check(request("https://example.debrid.it/f", Some("bytes=0-"), None), &mut sink), "bad_range");
+        let check = |r: NativeRangeRequest, sink: &mut dyn FnMut(Value) -> bool| {
+            run(&r, &cancel, sink)["error"].clone()
+        };
+        assert_eq!(
+            check(
+                request(
+                    "https://example.debrid.it/f",
+                    Some("bytes=0-9"),
+                    Some("POST")
+                ),
+                &mut sink
+            ),
+            "method_not_allowed"
+        );
+        assert_eq!(
+            check(
+                request("https://127.0.0.1/f", Some("bytes=0-9"), None),
+                &mut sink
+            ),
+            "host_not_allowed"
+        );
+        assert_eq!(
+            check(
+                request("https://example.debrid.it/f", None, None),
+                &mut sink
+            ),
+            "range_required"
+        );
+        assert_eq!(
+            check(
+                request("https://example.debrid.it/f", Some("bytes=0-"), None),
+                &mut sink
+            ),
+            "bad_range"
+        );
     }
 
     #[test]
@@ -643,19 +884,38 @@ mod tests {
 
     #[test]
     fn unreadable_requests_get_a_final_bad_request_reply() {
-        assert_eq!(bad_request(Some(&json!({ "id": 7, "url": 42 }))), json!({ "id": 7, "error": "bad_request" }));
-        assert_eq!(bad_request(Some(&json!({ "id": "7" }))), json!({ "id": null, "error": "bad_request" }));
-        assert_eq!(bad_request(Some(&json!({ "url": "https://example.debrid.it/f" }))), json!({ "id": null, "error": "bad_request" }));
-        assert_eq!(bad_request(None), json!({ "id": null, "error": "bad_request" }));
+        assert_eq!(
+            bad_request(Some(&json!({ "id": 7, "url": 42 }))),
+            json!({ "id": 7, "error": "bad_request" })
+        );
+        assert_eq!(
+            bad_request(Some(&json!({ "id": "7" }))),
+            json!({ "id": null, "error": "bad_request" })
+        );
+        assert_eq!(
+            bad_request(Some(&json!({ "url": "https://example.debrid.it/f" }))),
+            json!({ "id": null, "error": "bad_request" })
+        );
+        assert_eq!(
+            bad_request(None),
+            json!({ "id": null, "error": "bad_request" })
+        );
     }
 
     #[test]
     fn caps_and_wire_messages_follow_the_protocol() {
-        assert_eq!(caps(), json!({ "version": 1, "maxChunk": 1_048_576, "maxRange": 8_388_608 }));
-        let chunk: Value = serde_json::from_str(&RPCResponse::native_range_chunk(json!({ "id": 1 }))).unwrap();
+        assert_eq!(
+            caps(),
+            json!({ "version": 1, "maxChunk": 1_048_576, "maxRange": 8_388_608 })
+        );
+        let chunk: Value =
+            serde_json::from_str(&RPCResponse::native_range_chunk(json!({ "id": 1 }))).unwrap();
         assert_eq!(chunk["args"][0], "native-range-chunk");
         assert_eq!(chunk["args"][1]["id"], 1);
-        let fin: Value = serde_json::from_str(&RPCResponse::native_range_response(json!({ "id": 1, "error": "x" }))).unwrap();
+        let fin: Value = serde_json::from_str(&RPCResponse::native_range_response(
+            json!({ "id": 1, "error": "x" }),
+        ))
+        .unwrap();
         assert_eq!(fin["args"][0], "native-range-response");
         assert_eq!(fin["args"][1]["error"], "x");
     }

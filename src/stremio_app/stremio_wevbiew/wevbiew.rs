@@ -396,11 +396,20 @@ mod tests {
     #[test]
     fn public_mode_accepts_messages_only_from_the_public_origin() {
         let origin = trusted(PUBLIC_URL);
-        assert!(same_origin(&origin, "https://laststream.gtux-prog.workers.dev/#/player"));
+        assert!(same_origin(
+            &origin,
+            "https://laststream.gtux-prog.workers.dev/#/player"
+        ));
         assert!(!same_origin(&origin, "http://127.0.0.1:7000/"));
         assert!(!same_origin(&origin, "https://evil.workers.dev/"));
-        assert!(!same_origin(&origin, "http://laststream.gtux-prog.workers.dev/"));
-        assert!(!same_origin(&origin, "https://laststream.gtux-prog.workers.dev.evil.com/"));
+        assert!(!same_origin(
+            &origin,
+            "http://laststream.gtux-prog.workers.dev/"
+        ));
+        assert!(!same_origin(
+            &origin,
+            "https://laststream.gtux-prog.workers.dev.evil.com/"
+        ));
     }
 
     #[test]
@@ -413,6 +422,9 @@ mod tests {
 
     #[test]
     fn nothing_is_accepted_before_the_first_navigation() {
-        assert!(!same_origin(&trusted_origin(&RefCell::new(None)), PUBLIC_URL));
+        assert!(!same_origin(
+            &trusted_origin(&RefCell::new(None)),
+            PUBLIC_URL
+        ));
     }
 }
