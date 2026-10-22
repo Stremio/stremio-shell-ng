@@ -121,7 +121,9 @@ fn run_server(
         Err(error) => {
             child.kill().ok();
             child.wait().ok();
-            return Err(format!("Impossible de superviser laststream-runtime : {error}"));
+            return Err(format!(
+                "Impossible de superviser laststream-runtime : {error}"
+            ));
         }
     };
 
