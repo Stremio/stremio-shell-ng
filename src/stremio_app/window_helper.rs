@@ -19,7 +19,7 @@ pub static PIP_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const DWMWA_CAPTION_COLOR: DWORD = 35;
 const DWMWA_TEXT_COLOR: DWORD = 36;
-const STREMIO_CAPTION_COLOR: DWORD = colorref(0x15, 0x12, 0x2b);
+const CAPTION_COLOR: DWORD = colorref(0x15, 0x12, 0x2b);
 const WHITE_TEXT_COLOR: DWORD = colorref(0xff, 0xff, 0xff);
 
 const fn colorref(red: DWORD, green: DWORD, blue: DWORD) -> DWORD {
@@ -109,8 +109,8 @@ impl WindowStyle {
             DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_CAPTION_COLOR,
-                &STREMIO_CAPTION_COLOR as *const _ as *const c_void,
-                mem::size_of_val(&STREMIO_CAPTION_COLOR) as DWORD,
+                &CAPTION_COLOR as *const _ as *const c_void,
+                mem::size_of_val(&CAPTION_COLOR) as DWORD,
             );
             DwmSetWindowAttribute(
                 hwnd,

@@ -1,6 +1,7 @@
-## Stremio shell: new gen
+## Laststream : coque Windows
 
-A Windows-only shell using WebView2 and MPV
+A Windows-only shell using WebView2 and MPV (le crate garde le nom interne `stremio-shell-ng` ;
+l'exécutable livré s'appelle `laststream.exe`)
 
 Goals:
 * Performance

@@ -113,7 +113,7 @@ fn run_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("Cannot execute stremio-runtime: {error}"))?;
+        .map_err(|error| format!("Impossible d'exécuter laststream-runtime : {error}"))?;
 
     #[cfg(windows)]
     let job = match super::job::ChildJob::assign(&child) {
@@ -121,7 +121,9 @@ fn run_server(
         Err(error) => {
             child.kill().ok();
             child.wait().ok();
-            return Err(format!("Cannot supervise stremio-runtime: {error}"));
+            return Err(format!(
+                "Impossible de superviser laststream-runtime : {error}"
+            ));
         }
     };
 
@@ -267,7 +269,7 @@ mod tests {
             };
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(directory)
-                .join("stremio-runtime.exe")
+                .join("laststream-runtime.exe")
         } else {
             PathBuf::from("node")
         }
@@ -319,7 +321,7 @@ mod tests {
             || {},
         );
         process.start();
-        assert!(failed(&process).contains("Cannot execute stremio-runtime"));
+        assert!(failed(&process).contains("Impossible d'exécuter laststream-runtime"));
     }
 
     #[test]

@@ -30,7 +30,7 @@ pub enum Target {
 pub struct StartupPlan {
     /// Launch (or reuse) the embedded lastAddon.
     pub local_addon: bool,
-    /// Launch the Stremio streaming server (`stremio-runtime`).
+    /// Launch the streaming server (`laststream-runtime`).
     pub streaming_server: bool,
     /// Remote page to probe, then load.
     pub remote_url: Option<String>,

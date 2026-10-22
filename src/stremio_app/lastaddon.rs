@@ -205,9 +205,7 @@ fn run_attempt(
         .spawn()
     {
         Ok(child) => child,
-        Err(error) => {
-            return Attempt::Failed(format!("Impossible de lancer stremio-runtime : {error}"))
-        }
+        Err(error) => return Attempt::Failed(format!("Impossible de lancer le runtime : {error}")),
     };
     let job = match ChildJob::assign(&child) {
         Ok(job) => job,
@@ -452,7 +450,7 @@ mod tests {
         };
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(directory)
-            .join("stremio-runtime.exe")
+            .join("laststream-runtime.exe")
     }
 
     fn script(source: &str) -> Command {

@@ -65,7 +65,7 @@ fn main() {
         .nth(1)
         .expect("usage: mpv_smoke <media file>");
     let mpv = Mpv::with_initializer(|i| {
-        i.set_property("audio-client-name", "Stremio")?;
+        i.set_property("audio-client-name", "Laststream")?;
         i.set_property("msg-level", "all=no")?;
         i.set_property("quiet", "yes")?;
         i.set_property("hwdec", "auto")?;

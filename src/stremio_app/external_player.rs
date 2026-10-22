@@ -126,7 +126,7 @@ fn command_program(command: &str) -> Option<PathBuf> {
 fn open_playlist(url: &Url) -> Result<(), &'static str> {
     let directory = dirs::download_dir()
         .ok_or("Downloads directory is unavailable")?
-        .join("Stremio");
+        .join(APP_NAME);
     fs::create_dir_all(&directory).map_err(|_| "cannot create playlist directory")?;
     let path = directory.join("playlist.m3u");
     fs::write(&path, format!("#EXTM3U\n#EXTINF:0\n{url}"))

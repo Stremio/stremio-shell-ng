@@ -36,10 +36,10 @@ LanguageDetectionMethod=uilanguage
 ShowLanguageDialog=auto
 CloseApplications=yes
 SetupMutex=LaststreamSetupMutex,Global\LaststreamSetupMutex
-SetupIconFile={#SourcePath}..\images\stremio.ico
+SetupIconFile={#SourcePath}..\images\laststream.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 #ifdef SIGN
-SignTool=stremiosign
+SignTool=laststreamsign
 SignedUninstaller=yes
 #endif
 

@@ -754,7 +754,7 @@ impl MainWindow {
             self.splash_screen.hide();
             nwg::modal_error_message(
                 &self.window,
-                "Cannot load Stremio Web UI",
+                "Impossible de charger l'interface Laststream",
                 &error.to_string(),
             );
         }
@@ -808,12 +808,12 @@ impl MainWindow {
                     self.splash_screen.hide();
                     self.on_show();
                     let content = format!(
-                        "Stremio's local streaming server is unavailable.\n\n{details}\n\nChoose Retry to start the server again, or Cancel to exit Stremio."
+                        "Le serveur de streaming local de Laststream est indisponible.\n\n{details}\n\nRelancez le serveur ou quittez Laststream."
                     );
                     let choice = nwg::modal_message(
                         &self.window,
                         &nwg::MessageParams {
-                            title: "Stremio server",
+                            title: APP_NAME,
                             content: &content,
                             buttons: nwg::MessageButtons::RetryCancel,
                             icons: nwg::MessageIcons::Error,
