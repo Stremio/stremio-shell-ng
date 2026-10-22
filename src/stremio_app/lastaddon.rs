@@ -205,9 +205,7 @@ fn run_attempt(
         .spawn()
     {
         Ok(child) => child,
-        Err(error) => {
-            return Attempt::Failed(format!("Impossible de lancer le runtime : {error}"))
-        }
+        Err(error) => return Attempt::Failed(format!("Impossible de lancer le runtime : {error}")),
     };
     let job = match ChildJob::assign(&child) {
         Ok(job) => job,
