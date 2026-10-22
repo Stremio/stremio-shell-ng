@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
     process::{self, Command},
     str,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{
+        atomic::Ordering,
+        Arc, Mutex,
+    },
     thread, time,
 };
 use url::Url;
@@ -443,17 +446,12 @@ impl MainWindow {
                     // Pont HTTP vers les débrideurs (AllDebrid, TorBox), limité à leurs domaines : requête depuis cet appareil.
                     Some("native-http") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
-                            serde_json::from_value::<
-                                crate::stremio_app::native_http::NativeHttpRequest,
-                            >(params.clone())
-                            .ok()
+                            serde_json::from_value::<crate::stremio_app::native_http::NativeHttpRequest>(params.clone()).ok()
                         }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
                                 let payload = crate::stremio_app::native_http::run(&request);
-                                reply_tx
-                                    .send(RPCResponse::native_http_response(payload))
-                                    .ok();
+                                reply_tx.send(RPCResponse::native_http_response(payload)).ok();
                             });
                         }
                     }
@@ -461,74 +459,50 @@ impl MainWindow {
                     Some("native-range") => {
                         let params = msg.get_params();
                         match params.and_then(|params| {
-                            serde_json::from_value::<
-                                crate::stremio_app::native_range::NativeRangeRequest,
-                            >(params.clone())
-                            .ok()
+                            serde_json::from_value::<crate::stremio_app::native_range::NativeRangeRequest>(params.clone()).ok()
                         }) {
-                            Some(request) => {
-                                crate::stremio_app::native_range::start(request, web_tx_web.clone())
-                            }
+                            Some(request) => crate::stremio_app::native_range::start(request, web_tx_web.clone()),
                             // Requête illisible : réponse finale quand même, avec l'identifiant s'il existe (jamais de silence).
                             None => {
                                 web_tx_web
-                                    .send(RPCResponse::native_range_response(
-                                        crate::stremio_app::native_range::bad_request(params),
-                                    ))
+                                    .send(RPCResponse::native_range_response(crate::stremio_app::native_range::bad_request(params)))
                                     .ok();
                             }
                         }
                     }
                     Some("native-range-cancel") => {
                         if let Some(cancel) = msg.get_params().and_then(|params| {
-                            serde_json::from_value::<
-                                crate::stremio_app::native_range::NativeRangeCancel,
-                            >(params.clone())
-                            .ok()
+                            serde_json::from_value::<crate::stremio_app::native_range::NativeRangeCancel>(params.clone()).ok()
                         }) {
                             crate::stremio_app::native_range::cancel(cancel.id);
                         }
                     }
                     Some("native-range-caps") => {
                         web_tx_web
-                            .send(RPCResponse::native_range_caps(
-                                crate::stremio_app::native_range::caps(),
-                            ))
+                            .send(RPCResponse::native_range_caps(crate::stremio_app::native_range::caps()))
                             .ok();
                     }
                     // Pont HTTP « addon stream » (GET https borné, voir addon_http.rs) : mêmes signaux de réponse que native-http.
                     Some("native-addon-http") => {
-                        if let Some(request) =
-                            msg.get_params().and_then(|params| {
-                                serde_json::from_value::<
-                                    crate::stremio_app::addon_http::AddonHttpRequest,
-                                >(params.clone())
-                                .ok()
-                            })
-                        {
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<crate::stremio_app::addon_http::AddonHttpRequest>(params.clone()).ok()
+                        }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
                                 let payload = crate::stremio_app::addon_http::run(&request);
-                                reply_tx
-                                    .send(RPCResponse::native_http_response(payload))
-                                    .ok();
+                                reply_tx.send(RPCResponse::native_http_response(payload)).ok();
                             });
                         }
                     }
                     // Pont HTTP « playlist de box TV » (Freebox ou URL M3U de l'utilisateur, LAN autorisé, voir box_playlist.rs). Rien n'est journalisé.
                     Some("native-box-playlist") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
-                            serde_json::from_value::<
-                                crate::stremio_app::box_playlist::BoxPlaylistRequest,
-                            >(params.clone())
-                            .ok()
+                            serde_json::from_value::<crate::stremio_app::box_playlist::BoxPlaylistRequest>(params.clone()).ok()
                         }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
                                 let payload = crate::stremio_app::box_playlist::run(&request);
-                                reply_tx
-                                    .send(RPCResponse::native_http_response(payload))
-                                    .ok();
+                                reply_tx.send(RPCResponse::native_http_response(payload)).ok();
                             });
                         }
                     }

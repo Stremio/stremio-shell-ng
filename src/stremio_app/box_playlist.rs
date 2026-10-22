@@ -57,10 +57,7 @@ pub fn redirect_target(base: &url::Url, location: &str) -> Option<url::Url> {
 #[cfg(test)]
 pub fn is_m3u(body: &[u8]) -> bool {
     let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(body);
-    let start = body
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(body.len());
+    let start = body.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(body.len());
     body[start..].starts_with(b"#EXTM3U")
 }
 
@@ -70,10 +67,7 @@ pub fn is_playlist_body(body: &[u8]) -> bool {
         return true;
     }
     let body = body.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(body);
-    let start = body
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(body.len());
+    let start = body.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(body.len());
     let head = &body[start..];
     head.starts_with(b"#EXTM3U") || head.starts_with(b"<?xml") || head.starts_with(b"<tv")
 }
@@ -82,10 +76,7 @@ pub fn is_playlist_body(body: &[u8]) -> bool {
 fn read_limited<R: std::io::Read>(reader: R, max: usize) -> Result<Vec<u8>, bool> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    reader
-        .take(max as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| false)?;
+    reader.take(max as u64 + 1).read_to_end(&mut bytes).map_err(|_| false)?;
     if bytes.len() > max {
         return Err(true);
     }
@@ -94,12 +85,7 @@ fn read_limited<R: std::io::Read>(reader: R, max: usize) -> Result<Vec<u8>, bool
 
 /// Exécute la requête (bloquant : à lancer dans un fil). Renvoie la charge du signal `native-http-response`.
 pub fn run(req: &BoxPlaylistRequest) -> Value {
-    if !req
-        .method
-        .as_deref()
-        .unwrap_or("GET")
-        .eq_ignore_ascii_case("GET")
-    {
+    if !req.method.as_deref().unwrap_or("GET").eq_ignore_ascii_case("GET") {
         return error_reply(req.request_id, "method_not_allowed");
     }
     let mut url = match parse_box_url(&req.url) {
@@ -122,10 +108,7 @@ pub fn run(req: &BoxPlaylistRequest) -> Value {
         };
         let response = match client
             .get(url.clone())
-            .header(
-                "Accept",
-                "audio/x-mpegurl, application/x-mpegurl, text/plain, */*",
-            )
+            .header("Accept", "audio/x-mpegurl, application/x-mpegurl, text/plain, */*")
             .header("User-Agent", "Laststream")
             .send()
         {
@@ -148,10 +131,7 @@ pub fn run(req: &BoxPlaylistRequest) -> Value {
                 _ => return error_reply(req.request_id, "redirect_not_allowed"),
             }
         }
-        if response
-            .content_length()
-            .map_or(false, |n| n > MAX_RESPONSE_BYTES as u64)
-        {
+        if response.content_length().map_or(false, |n| n > MAX_RESPONSE_BYTES as u64) {
             return error_reply(req.request_id, "too_large");
         }
         let bytes = match read_limited(response, MAX_RESPONSE_BYTES) {
@@ -177,11 +157,7 @@ mod tests {
     use super::*;
 
     fn req(url: &str) -> BoxPlaylistRequest {
-        BoxPlaylistRequest {
-            request_id: 1,
-            url: url.into(),
-            method: None,
-        }
+        BoxPlaylistRequest { request_id: 1, url: url.into(), method: None }
     }
 
     #[test]
@@ -260,14 +236,8 @@ mod tests {
         let mut r = req("http://mafreebox.freebox.fr/freeboxtv/playlist.m3u");
         r.method = Some("POST".into());
         assert_eq!(run(&r)["error"], "method_not_allowed");
-        assert_eq!(
-            run(&req("ftp://exemple.fr/p.m3u"))["error"],
-            "host_not_allowed"
-        );
-        assert_eq!(
-            run(&req("rtsp://mafreebox.freebox.fr/x"))["error"],
-            "host_not_allowed"
-        );
+        assert_eq!(run(&req("ftp://exemple.fr/p.m3u"))["error"], "host_not_allowed");
+        assert_eq!(run(&req("rtsp://mafreebox.freebox.fr/x"))["error"], "host_not_allowed");
     }
 
     #[test]

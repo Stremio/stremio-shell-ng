@@ -1,6 +1,6 @@
 use crate::stremio_app::stremio_player::communication::{
-    BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, IntProp, PlayerEnded, PlayerProprChange,
-    PlayerResponse, PropKey, PropVal,
+    BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
+    IntProp, PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 

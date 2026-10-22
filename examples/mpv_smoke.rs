@@ -16,18 +16,10 @@ fn tracks(mpv: &Mpv) -> Vec<Track> {
     let n = mpv.get_property::<i64>("track-list/count").unwrap_or(0);
     (0..n)
         .map(|i| Track {
-            id: mpv
-                .get_property::<i64>(&format!("track-list/{i}/id"))
-                .unwrap_or(-1),
-            kind: mpv
-                .get_property::<String>(&format!("track-list/{i}/type"))
-                .unwrap_or_default(),
-            lang: mpv
-                .get_property::<String>(&format!("track-list/{i}/lang"))
-                .unwrap_or_default(),
-            title: mpv
-                .get_property::<String>(&format!("track-list/{i}/title"))
-                .unwrap_or_default(),
+            id: mpv.get_property::<i64>(&format!("track-list/{i}/id")).unwrap_or(-1),
+            kind: mpv.get_property::<String>(&format!("track-list/{i}/type")).unwrap_or_default(),
+            lang: mpv.get_property::<String>(&format!("track-list/{i}/lang")).unwrap_or_default(),
+            title: mpv.get_property::<String>(&format!("track-list/{i}/title")).unwrap_or_default(),
         })
         .collect()
 }
@@ -61,9 +53,7 @@ fn version_at_least(v: &str, min: (u32, u32)) -> bool {
 }
 
 fn main() {
-    let file = std::env::args()
-        .nth(1)
-        .expect("usage: mpv_smoke <media file>");
+    let file = std::env::args().nth(1).expect("usage: mpv_smoke <media file>");
     let mpv = Mpv::with_initializer(|i| {
         i.set_property("audio-client-name", "Laststream")?;
         i.set_property("msg-level", "all=no")?;
@@ -79,16 +69,13 @@ fn main() {
         Ok(())
     })
     .expect("cannot build MPV");
-    let version = mpv
-        .get_property::<String>("mpv-version")
-        .unwrap_or_default();
+    let version = mpv.get_property::<String>("mpv-version").unwrap_or_default();
     let new_syntax = version_at_least(&version, (0, 39));
     println!("libmpv: {version} (loadfile new syntax: {new_syntax})");
     let _ = mpv.disable_deprecated_events();
 
     let mut rows: Vec<(String, bool, String)> = Vec::new();
-    let mut check =
-        |name: &str, ok: bool, detail: String| rows.push((name.to_string(), ok, detail));
+    let mut check = |name: &str, ok: bool, detail: String| rows.push((name.to_string(), ok, detail));
 
     // Resume syntax is exercised with a 2 s start; the shell only sends it when startAt > 0.
     let args = loadfile_args(&file, 2.0, new_syntax);
@@ -111,10 +98,7 @@ fn main() {
 
     while Instant::now() < deadline && !ended {
         match mpv.wait_event(0.1) {
-            Some(Ok(Event::FileLoaded)) => {
-                loaded = true;
-                load_s = t0.elapsed().as_secs_f64();
-            }
+            Some(Ok(Event::FileLoaded)) => { loaded = true; load_s = t0.elapsed().as_secs_f64(); }
             Some(Ok(Event::EndFile(r))) => {
                 ended = true;
                 end_reason = format!("{r:?}");
@@ -128,10 +112,7 @@ fn main() {
         if first_pos.is_none() && p >= 0.0 {
             first_pos = Some((p, Instant::now()));
             dur = mpv.get_property::<f64>("duration").unwrap_or(0.0);
-            audio = tracks(&mpv)
-                .into_iter()
-                .filter(|t| t.kind == "audio")
-                .collect();
+            audio = tracks(&mpv).into_iter().filter(|t| t.kind == "audio").collect();
             // Same selection as the web app: by language fre/fra, then aid <- track id.
             if let Some(t) = audio.iter().find(|t| t.lang == "fre" || t.lang == "fra") {
                 fr_id = t.id;
@@ -153,50 +134,16 @@ fn main() {
 
     let sp = first_pos.map(|x| x.0).unwrap_or(-1.0);
     check("file loaded", loaded, format!("after {load_s:.2}s"));
-    check(
-        "resume start=+2 honoured",
-        (1.5..4.0).contains(&sp),
-        format!("first time-pos {sp:.2}s"),
-    );
-    check(
-        "duration ~20s",
-        (dur - 20.0).abs() < 1.0,
-        format!("{dur:.2}s"),
-    );
+    check("resume start=+2 honoured", (1.5..4.0).contains(&sp), format!("first time-pos {sp:.2}s"));
+    check("duration ~20s", (dur - 20.0).abs() < 1.0, format!("{dur:.2}s"));
     let (a, w) = adv.unwrap_or((0.0, 0.0));
-    check(
-        "time-pos advances >=3s within 10s wall",
-        adv.is_some() && w <= 10.0,
-        format!("+{a:.2}s media in {w:.2}s wall"),
-    );
-    let langs: Vec<String> = audio
-        .iter()
-        .map(|t| format!("{}:{}({})", t.id, t.lang, t.title))
-        .collect();
+    check("time-pos advances >=3s within 10s wall", adv.is_some() && w <= 10.0, format!("+{a:.2}s media in {w:.2}s wall"));
+    let langs: Vec<String> = audio.iter().map(|t| format!("{}:{}({})", t.id, t.lang, t.title)).collect();
     let has = |l: &str| audio.iter().any(|t| t.lang == l);
-    check(
-        "2 audio tracks jpn+fre",
-        audio.len() == 2 && has("jpn") && has("fre"),
-        langs.join(" "),
-    );
-    check(
-        "aid -> fre track after select",
-        selected && selected_aid == fr_id && fr_id > 0,
-        format!("aid={selected_aid} fre_id={fr_id}"),
-    );
-    check(
-        "seek to 15s",
-        sought.is_some(),
-        format!("time-pos {:.2}s", sought.unwrap_or(-1.0)),
-    );
-    check(
-        "end-file fires",
-        ended,
-        format!(
-            "reason {end_reason}, {:.1}s total",
-            t0.elapsed().as_secs_f64()
-        ),
-    );
+    check("2 audio tracks jpn+fre", audio.len() == 2 && has("jpn") && has("fre"), langs.join(" "));
+    check("aid -> fre track after select", selected && selected_aid == fr_id && fr_id > 0, format!("aid={selected_aid} fre_id={fr_id}"));
+    check("seek to 15s", sought.is_some(), format!("time-pos {:.2}s", sought.unwrap_or(-1.0)));
+    check("end-file fires", ended, format!("reason {end_reason}, {:.1}s total", t0.elapsed().as_secs_f64()));
 
     println!("\n{:<42} {:<5} {}", "CHECK", "RES", "VALUE");
     for (n, ok, d) in &rows {

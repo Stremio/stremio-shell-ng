@@ -1,12 +1,12 @@
 pub mod app;
 pub use app::MainWindow;
-pub mod addon_http;
-pub mod box_playlist;
 pub mod external_player;
 pub mod gpu_video_processing;
 pub mod ipc;
 pub mod lastaddon;
 pub mod lastaddon_import;
+pub mod addon_http;
+pub mod box_playlist;
 pub mod native_http;
 pub mod native_range;
 pub mod shell_config;
