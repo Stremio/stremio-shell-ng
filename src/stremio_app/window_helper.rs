@@ -5,12 +5,12 @@ use winapi::shared::minwindef::DWORD;
 use winapi::shared::windef::HWND;
 use winapi::um::dwmapi::DwmSetWindowAttribute;
 use winapi::um::winuser::{
-    GetDpiForWindow, GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowRect,
-    IsIconic, IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA, SetWindowPlacement,
-    SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
-    WINDOWPLACEMENT, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
-    WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_THICKFRAME,
+    GetDpiForWindow, GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA,
+    GetWindowRect, IsIconic, IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA,
+    SetWindowPlacement, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE,
+    SWP_NOSIZE, WINDOWPLACEMENT, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+    WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_MAXIMIZE, WS_THICKFRAME,
 };
 
 /// True while the window is in picture-in-picture. Read by WM_GETMINMAXINFO, which Windows sends

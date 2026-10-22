@@ -42,9 +42,13 @@ pub fn path_allowed(path: &str) -> bool {
     if path.ends_with("/manifest.json") {
         return true;
     }
-    let Some(stem) = path.strip_suffix(".json") else { return false };
+    let Some(stem) = path.strip_suffix(".json") else {
+        return false;
+    };
     let mut parts = stem.rsplitn(3, '/');
-    let (Some(id), Some(kind), Some(rest)) = (parts.next(), parts.next(), parts.next()) else { return false };
+    let (Some(id), Some(kind), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
     (rest.ends_with("/stream") || rest == "stream")
         && STREAM_TYPES.contains(&kind)
         && !id.is_empty()
@@ -84,7 +88,8 @@ fn ipv6_is_public(ip: Ipv6Addr) -> bool {
     }
     let s = ip.segments();
     // IPv4 encapsulé : ::ffff:a.b.c.d, ::a.b.c.d (compatible), 64:ff9b::/96 (NAT64), 2002::/16 (6to4).
-    let embedded = |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+    let embedded =
+        |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
     if s[..5] == [0, 0, 0, 0, 0] && (s[5] == 0xffff || s[5] == 0) {
         return ipv4_is_public(embedded(s[6], s[7]));
     }
@@ -119,7 +124,7 @@ pub fn public_named_url(raw: &str, max_len: usize) -> Option<url::Url> {
         && !domain.ends_with('.')
         && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         // Une IPv4 en décimal/octal/hex est normalisée en Host::Ipv4 par `url` ; on refuse aussi un dernier label numérique.
-        && !domain.rsplit('.').next().map_or(true, |l| l.chars().all(|c| c.is_ascii_digit()));
+        && !domain.rsplit('.').next().is_none_or(|l| l.chars().all(|c| c.is_ascii_digit()));
     let ok = host_ok
         && url.scheme() == "https"
         && url.username().is_empty()
@@ -142,13 +147,19 @@ pub fn redirect_target(base: &url::Url, location: &str) -> Option<url::Url> {
 }
 
 /// Résout l'hôte et refuse si UNE adresse n'est pas publique. Renvoie les adresses à épingler.
-pub fn resolve_public(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Option<Vec<SocketAddr>> {
+pub fn resolve_public(
+    host: &str,
+    resolver: &dyn Fn(&str) -> Vec<IpAddr>,
+) -> Option<Vec<SocketAddr>> {
     resolve_public_checked(host, resolver).ok()
 }
 
 /// Comme `resolve_public`, mais distingue un échec de résolution (`network` : aucune adresse, DNS indisponible) d'un refus
 /// (`host_not_allowed` : au moins une adresse non publique).
-pub fn resolve_public_checked(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Result<Vec<SocketAddr>, &'static str> {
+pub fn resolve_public_checked(
+    host: &str,
+    resolver: &dyn Fn(&str) -> Vec<IpAddr>,
+) -> Result<Vec<SocketAddr>, &'static str> {
     let ips = resolver(host);
     if ips.is_empty() {
         return Err("network");
@@ -162,7 +173,10 @@ pub fn resolve_public_checked(host: &str, resolver: &dyn Fn(&str) -> Vec<IpAddr>
 /// Résolution système ; un échec (liste vide) est retenté une fois avant d'abandonner.
 pub fn system_resolver(host: &str) -> Vec<IpAddr> {
     for _ in 0..2 {
-        let ips: Vec<IpAddr> = (host, 443u16).to_socket_addrs().map(|it| it.map(|a| a.ip()).collect()).unwrap_or_default();
+        let ips: Vec<IpAddr> = (host, 443u16)
+            .to_socket_addrs()
+            .map(|it| it.map(|a| a.ip()).collect())
+            .unwrap_or_default();
         if !ips.is_empty() {
             return ips;
         }
@@ -174,7 +188,10 @@ pub fn system_resolver(host: &str) -> Vec<IpAddr> {
 fn read_limited<R: std::io::Read>(reader: R, max: usize) -> Result<Vec<u8>, bool> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    reader.take(max as u64 + 1).read_to_end(&mut bytes).map_err(|_| false)?;
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| false)?;
     if bytes.len() > max {
         return Err(true);
     }
@@ -187,7 +204,12 @@ pub fn run(req: &AddonHttpRequest) -> Value {
 }
 
 fn run_with(req: &AddonHttpRequest, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> Value {
-    if !req.method.as_deref().unwrap_or("GET").eq_ignore_ascii_case("GET") {
+    if !req
+        .method
+        .as_deref()
+        .unwrap_or("GET")
+        .eq_ignore_ascii_case("GET")
+    {
         return error_reply(req.request_id, "method_not_allowed");
     }
     let mut url = match parse_addon_url(&req.url) {
@@ -197,7 +219,11 @@ fn run_with(req: &AddonHttpRequest, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> V
     let accept = req
         .headers
         .as_ref()
-        .and_then(|h| h.iter().find(|(k, _)| k.eq_ignore_ascii_case("accept")).map(|(_, v)| v.clone()))
+        .and_then(|h| {
+            h.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("accept"))
+                .map(|(_, v)| v.clone())
+        })
         .filter(|v| v.len() <= 200 && v.chars().all(|c| c.is_ascii() && !c.is_ascii_control()))
         .unwrap_or_else(|| "application/json".to_owned());
     let started = Instant::now();
@@ -221,7 +247,12 @@ fn run_with(req: &AddonHttpRequest, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> V
             Ok(c) => c,
             Err(_) => return error_reply(req.request_id, "client"),
         };
-        let response = match client.get(url.clone()).header("Accept", accept.as_str()).header("User-Agent", "Laststream").send() {
+        let response = match client
+            .get(url.clone())
+            .header("Accept", accept.as_str())
+            .header("User-Agent", "Laststream")
+            .send()
+        {
             Ok(r) => r,
             Err(e) if e.is_timeout() => return error_reply(req.request_id, "timeout"),
             Err(_) => return error_reply(req.request_id, "network"),
@@ -241,11 +272,18 @@ fn run_with(req: &AddonHttpRequest, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> V
                 _ => return error_reply(req.request_id, "redirect_not_allowed"),
             }
         }
-        if response.content_length().map_or(false, |n| n > MAX_RESPONSE_BYTES as u64) {
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+        {
             return error_reply(req.request_id, "too_large");
         }
         let mut headers = serde_json::Map::new();
-        if let Some(ct) = response.headers().get("content-type").and_then(|v| v.to_str().ok()) {
+        if let Some(ct) = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+        {
             headers.insert("content-type".to_owned(), Value::String(ct.to_owned()));
         }
         let bytes = match read_limited(response, MAX_RESPONSE_BYTES) {
@@ -268,7 +306,12 @@ mod tests {
     use super::*;
 
     fn req(url: &str) -> AddonHttpRequest {
-        AddonHttpRequest { request_id: 1, url: url.into(), method: None, headers: None }
+        AddonHttpRequest {
+            request_id: 1,
+            url: url.into(),
+            method: None,
+            headers: None,
+        }
     }
 
     #[test]
@@ -323,9 +366,15 @@ mod tests {
         ] {
             assert!(parse_addon_url(ko).is_none(), "{}", ko);
         }
-        let long = format!("https://addon.example.com/stream/movie/{}.json", "a".repeat(201));
+        let long = format!(
+            "https://addon.example.com/stream/movie/{}.json",
+            "a".repeat(201)
+        );
         assert!(parse_addon_url(&long).is_none());
-        let max = format!("https://addon.example.com/stream/movie/{}.json", "a".repeat(200));
+        let max = format!(
+            "https://addon.example.com/stream/movie/{}.json",
+            "a".repeat(200)
+        );
         assert!(parse_addon_url(&max).is_some());
     }
 
@@ -347,13 +396,37 @@ mod tests {
     #[test]
     fn classifies_ip_addresses() {
         for ko in [
-            "127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-            "198.18.0.1", "::1", "::", "fe80::1", "fc00::1", "fd12::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "2002:c0a8:0101::1",
-            "2001:db8::1", "ff02::1",
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "198.18.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::7f00:1",
+            "2002:c0a8:0101::1",
+            "2001:db8::1",
+            "ff02::1",
         ] {
             assert!(!ip_is_public(ko.parse().unwrap()), "{}", ko);
         }
-        for ok in ["8.8.8.8", "1.1.1.1", "172.67.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"] {
+        for ok in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "172.67.1.1",
+            "2606:4700:4700::1111",
+            "::ffff:8.8.8.8",
+        ] {
             assert!(ip_is_public(ok.parse().unwrap()), "{}", ok);
         }
     }
@@ -361,7 +434,12 @@ mod tests {
     #[test]
     fn private_resolution_is_refused() {
         let private = |_: &str| vec!["10.1.2.3".parse::<IpAddr>().unwrap()];
-        let mixed = |_: &str| vec!["8.8.8.8".parse::<IpAddr>().unwrap(), "127.0.0.1".parse::<IpAddr>().unwrap()];
+        let mixed = |_: &str| {
+            vec![
+                "8.8.8.8".parse::<IpAddr>().unwrap(),
+                "127.0.0.1".parse::<IpAddr>().unwrap(),
+            ]
+        };
         let none = |_: &str| Vec::<IpAddr>::new();
         let u = "https://addon.example.com/manifest.json";
         assert_eq!(run_with(&req(u), &private)["error"], "host_not_allowed");
@@ -376,14 +454,22 @@ mod tests {
         let mut r = req("https://addon.example.com/manifest.json");
         r.method = Some("POST".into());
         assert_eq!(run_with(&r, &boom)["error"], "method_not_allowed");
-        assert_eq!(run_with(&req("http://addon.example.com/manifest.json"), &boom)["error"], "host_not_allowed");
-        assert_eq!(run_with(&req("https://10.0.0.1/manifest.json"), &boom)["error"], "host_not_allowed");
+        assert_eq!(
+            run_with(&req("http://addon.example.com/manifest.json"), &boom)["error"],
+            "host_not_allowed"
+        );
+        assert_eq!(
+            run_with(&req("https://10.0.0.1/manifest.json"), &boom)["error"],
+            "host_not_allowed"
+        );
     }
 
     #[test]
     fn redirects_follow_same_rules() {
         let base = url::Url::parse("https://a.example.com/cfg/stream/movie/tt1.json").unwrap();
-        assert!(redirect_target(&base, "https://b.example.org/other/stream/movie/tt1.json").is_some());
+        assert!(
+            redirect_target(&base, "https://b.example.org/other/stream/movie/tt1.json").is_some()
+        );
         assert!(redirect_target(&base, "/x/stream/movie/tt2.json").is_some());
         assert!(redirect_target(&base, "http://b.example.org/stream/movie/tt1.json").is_none());
         assert!(redirect_target(&base, "https://127.0.0.1/stream/movie/tt1.json").is_none());
