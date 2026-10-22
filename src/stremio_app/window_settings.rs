@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{env, fs, io, path::PathBuf};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+};
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::um::winuser::{
     GetWindowPlacement, IsIconic, SW_SHOWMAXIMIZED, SW_SHOWNORMAL, WINDOWPLACEMENT,
@@ -103,11 +106,26 @@ impl WindowSettings {
 }
 
 fn settings_path() -> PathBuf {
-    env::var_os("APPDATA")
+    let base = env::var_os("APPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("Stremio")
-        .join(WINDOW_SETTINGS_FILE)
+        .unwrap_or_else(env::temp_dir);
+    let path = base.join("Laststream").join(WINDOW_SETTINGS_FILE);
+    adopt_legacy_settings(&path, &base.join("Stremio").join(WINDOW_SETTINGS_FILE));
+    path
+}
+
+/// Reprend l'état de fenêtre de l'ancien dossier `%APPDATA%\Stremio` au premier lancement.
+/// Copie sans déplacer : une vraie installation de Stremio peut partager ce dossier.
+fn adopt_legacy_settings(path: &Path, legacy: &Path) {
+    if path.exists() || !legacy.is_file() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    fs::copy(legacy, path).ok();
 }
 
 fn is_restorable_size(rect: &RECT) -> bool {
@@ -156,8 +174,42 @@ impl From<Rect> for RECT {
 
 #[cfg(test)]
 mod tests {
-    use super::is_restorable_size;
+    use super::{adopt_legacy_settings, is_restorable_size, WINDOW_SETTINGS_FILE};
+    use std::{env, fs, path::PathBuf};
     use winapi::shared::windef::RECT;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("laststream-ws-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn legacy_window_state_is_copied_once() {
+        let root = scratch("copy");
+        let legacy = root.join("Stremio").join(WINDOW_SETTINGS_FILE);
+        let path = root.join("Laststream").join(WINDOW_SETTINGS_FILE);
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "ancien").unwrap();
+
+        adopt_legacy_settings(&path, &legacy);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ancien");
+        assert!(legacy.exists(), "l'ancien fichier reste en place");
+
+        fs::write(&path, "nouveau").unwrap();
+        adopt_legacy_settings(&path, &legacy);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "nouveau");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn missing_legacy_window_state_creates_nothing() {
+        let root = scratch("none");
+        let path = root.join("Laststream").join(WINDOW_SETTINGS_FILE);
+        adopt_legacy_settings(&path, &root.join("Stremio").join(WINDOW_SETTINGS_FILE));
+        assert!(!path.exists());
+        fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn rejects_empty_window_rect() {

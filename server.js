@@ -19772,7 +19772,7 @@
     };
 }, function(module, exports, __webpack_require__) {
     var path = __webpack_require__(5), appPath = __webpack_require__(145);
-    module.exports = "win32" === process.platform && process.env.LOCALAPPDATA && !process.env.DISABLE_CACHING ? path.join(process.env.LOCALAPPDATA, "Stremio") : appPath;
+    module.exports = "win32" === process.platform && process.env.LOCALAPPDATA && !process.env.DISABLE_CACHING ? path.join(process.env.LOCALAPPDATA, "Laststream") : appPath;
 }, function(module, exports, __webpack_require__) {
     exports.encode = function Bencode(obj) {
         var n, buf, buffer = null;

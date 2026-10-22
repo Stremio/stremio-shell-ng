@@ -1,11 +1,10 @@
 use chrono::{Datelike, Local};
-use std::{env, fs, io::Cursor, path::PathBuf};
+use std::{fs, io::Cursor, path::PathBuf};
 
 extern crate winres;
 fn main() {
     let now = Local::now();
-    let copyright = format!("Copyright © {} Smart Code OOD", now.year());
-    let exe_name = format!("{}.exe", env::var("CARGO_PKG_NAME").unwrap());
+    let copyright = format!("Copyright © {} Laststream", now.year());
     let mut res = winres::WindowsResource::new();
     res.set_manifest(
         r#"
@@ -34,9 +33,10 @@ fn main() {
     );
     res.set("FileDescription", "Laststream - Freedom to Stream");
     res.set("LegalCopyright", &copyright);
-    res.set("OriginalFilename", &exe_name);
-    res.set_icon_with_id("images/stremio.ico", "MAINICON");
-    res.append_rc_content(r##"SPLASHIMAGE IMAGE "images/stremio.png""##);
+    res.set("ProductName", "Laststream");
+    res.set("OriginalFilename", "laststream.exe");
+    res.set_icon_with_id("images/laststream.ico", "MAINICON");
+    res.append_rc_content(r##"SPLASHIMAGE IMAGE "images/laststream.png""##);
     res.compile().unwrap();
 
     //extract libmpv-2
