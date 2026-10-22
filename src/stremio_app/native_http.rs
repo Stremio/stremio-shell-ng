@@ -5,7 +5,10 @@
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::time::Duration;
+
+use crate::stremio_app::addon_http::{ip_is_public, system_resolver};
 
 /// Hôtes autorisés : API AllDebrid et TorBox, plus leurs domaines de fichiers (suffixes).
 const ALLOWED_HOSTS: &[&str] = &["api.alldebrid.com", "api.torbox.app"];
@@ -66,6 +69,23 @@ pub fn host_allowed(host: &str) -> bool {
             .any(|s| host.ends_with(s) && host.len() > s.len())
 }
 
+/// Politique des hôtes de débrideur, appliquée sur l'appareil seulement (jamais d'appel depuis un serveur) : l'allowlist ne suffit pas,
+/// un nom de l'allowlist ne doit pas se résoudre vers une adresse privée, loopback ou lien local (DNS détourné, résolveur local piégé).
+/// Une seule adresse non publique refuse l'hôte (`host_not_allowed`). Une résolution vide (DNS indisponible, ou proxy système qui
+/// résout à notre place) n'est pas un refus : la connexion échouera d'elle-même. Contrairement aux liens directs d'addon, la connexion
+/// n'est ni épinglée ni coupée du proxy système, pour ne pas casser les réseaux d'entreprise : seuls les domaines de l'allowlist,
+/// que ni l'addon ni la page ne contrôlent, restent exposés à une course entre cette vérification et la connexion.
+pub fn debrid_resolution_ok(
+    host: &str,
+    resolver: &dyn Fn(&str) -> Vec<IpAddr>,
+) -> Result<(), &'static str> {
+    if resolver(host).into_iter().all(ip_is_public) {
+        Ok(())
+    } else {
+        Err("host_not_allowed")
+    }
+}
+
 /// URL https d'un hôte autorisé, sans identifiants ni port autre que 443.
 pub fn parse_allowed_url(raw: &str) -> Option<url::Url> {
     let url = url::Url::parse(raw).ok()?;
@@ -101,15 +121,24 @@ pub fn run(req: &NativeHttpRequest) -> Value {
         Some(m) => m,
         None => return error_reply(req.request_id, "method_not_allowed"),
     };
+    if let Err(code) = debrid_resolution_ok(url.host_str().unwrap_or_default(), &system_resolver) {
+        return error_reply(req.request_id, code);
+    }
     let timeout = Duration::from_millis(
         req.timeout_ms
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .min(MAX_TIMEOUT_MS),
     );
-    // Redirections suivies seulement vers un hôte autorisé (3 au plus).
+    // Redirections suivies seulement vers un hôte autorisé en https:443 sans identifiants, dont la résolution est publique (3 au plus).
     let policy = reqwest::redirect::Policy::custom(|attempt| {
-        let allowed = attempt.url().scheme() == "https"
-            && attempt.url().host_str().map(host_allowed).unwrap_or(false);
+        let target = attempt.url();
+        let allowed = target.scheme() == "https"
+            && target.username().is_empty()
+            && target.password().is_none()
+            && matches!(target.port(), None | Some(443))
+            && target.host_str().is_some_and(|h| {
+                host_allowed(h) && debrid_resolution_ok(h, &system_resolver).is_ok()
+            });
         if attempt.previous().len() >= 3 || !allowed {
             attempt.stop()
         } else {
@@ -215,6 +244,49 @@ mod tests {
         assert!(parse_allowed_url("https://api.alldebrid.com:8443/").is_none());
         assert!(parse_allowed_url("https://evil.com/api.alldebrid.com").is_none());
         assert!(parse_allowed_url("file:///c:/windows/win.ini").is_none());
+    }
+
+    #[test]
+    fn debrid_hosts_must_resolve_to_public_addresses() {
+        let ips = |list: &'static [&'static str]| {
+            move |_: &str| -> Vec<IpAddr> {
+                list.iter().map(|s| s.parse::<IpAddr>().unwrap()).collect()
+            }
+        };
+        let host = "e1.example.alldebrid.com";
+        assert_eq!(debrid_resolution_ok(host, &ips(&["93.184.216.34"])), Ok(()));
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["2606:4700::1111", "8.8.8.8"])),
+            Ok(())
+        );
+        for private in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.0.9",
+            "192.168.1.20",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fe80::1",
+            "fd00::5",
+            "::ffff:192.168.1.2",
+        ] {
+            let resolver = move |_: &str| vec![private.parse::<IpAddr>().unwrap()];
+            assert_eq!(
+                debrid_resolution_ok(host, &resolver),
+                Err("host_not_allowed"),
+                "{}",
+                private
+            );
+        }
+        // Une seule adresse non publique suffit à refuser.
+        assert_eq!(
+            debrid_resolution_ok(host, &ips(&["93.184.216.34", "10.0.0.1"])),
+            Err("host_not_allowed")
+        );
+        // DNS indisponible : pas un refus de politique, la connexion échouera d'elle-même.
+        assert_eq!(debrid_resolution_ok(host, &|_| Vec::new()), Ok(()));
     }
 
     #[test]
