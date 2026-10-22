@@ -171,7 +171,7 @@ fn deliver<R: Read>(
 ) -> Value {
     let status = head.status;
     let limit = range.size();
-    if head.content_length.map_or(false, |n| n > limit) {
+    if head.content_length.is_some_and(|n| n > limit) {
         return error_with_status(id, "too_large", status);
     }
     let mut chunk = vec![0u8; CHUNK_RAW_BYTES];

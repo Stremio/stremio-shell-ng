@@ -150,7 +150,7 @@ pub fn run(req: &BoxPlaylistRequest) -> Value {
         }
         if response
             .content_length()
-            .map_or(false, |n| n > MAX_RESPONSE_BYTES as u64)
+            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
         {
             return error_reply(req.request_id, "too_large");
         }

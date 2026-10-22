@@ -124,7 +124,7 @@ pub fn public_named_url(raw: &str, max_len: usize) -> Option<url::Url> {
         && !domain.ends_with('.')
         && domain.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         // Une IPv4 en décimal/octal/hex est normalisée en Host::Ipv4 par `url` ; on refuse aussi un dernier label numérique.
-        && !domain.rsplit('.').next().map_or(true, |l| l.chars().all(|c| c.is_ascii_digit()));
+        && !domain.rsplit('.').next().is_none_or(|l| l.chars().all(|c| c.is_ascii_digit()));
     let ok = host_ok
         && url.scheme() == "https"
         && url.username().is_empty()
@@ -274,7 +274,7 @@ fn run_with(req: &AddonHttpRequest, resolver: &dyn Fn(&str) -> Vec<IpAddr>) -> V
         }
         if response
             .content_length()
-            .map_or(false, |n| n > MAX_RESPONSE_BYTES as u64)
+            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
         {
             return error_reply(req.request_id, "too_large");
         }

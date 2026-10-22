@@ -498,14 +498,12 @@ impl MainWindow {
                     }
                     // Pont HTTP « addon stream » (GET https borné, voir addon_http.rs) : mêmes signaux de réponse que native-http.
                     Some("native-addon-http") => {
-                        if let Some(request) =
-                            msg.get_params().and_then(|params| {
-                                serde_json::from_value::<
+                        if let Some(request) = msg.get_params().and_then(|params| {
+                            serde_json::from_value::<
                                     crate::stremio_app::addon_http::AddonHttpRequest,
                                 >(params.clone())
                                 .ok()
-                            })
-                        {
+                        }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
                                 let payload = crate::stremio_app::addon_http::run(&request);
