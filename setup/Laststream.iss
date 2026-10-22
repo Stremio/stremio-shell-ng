@@ -5,7 +5,7 @@
 ; les donnees utilisateur (%APPDATA%\Laststream) : aucune entree [UninstallDelete] ne les vise.
 
 #define MyAppName "Laststream"
-#define MyAppVersion "1.0.14"
+#define MyAppVersion "1.0.15"
 #define MyAppExeName "laststream.exe"
 #define MyAppSourceDir SourcePath + "..\..\dist\laststream-desktop\"
 #define MyAppPublisher "Laststream"
