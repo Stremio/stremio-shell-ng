@@ -784,7 +784,7 @@ impl MainWindow {
                     self.splash_screen.hide();
                     self.on_show();
                     let content = format!(
-                        "Le serveur de streaming local de Laststream est indisponible.\n\n{details}\n\nChoisissez Réessayer pour le relancer, ou Annuler pour quitter Laststream."
+                        "Le serveur de streaming local de Laststream est indisponible.\n\n{details}\n\nRelancez le serveur ou quittez Laststream."
                     );
                     let choice = nwg::modal_message(
                         &self.window,

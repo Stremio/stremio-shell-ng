@@ -37,9 +37,10 @@ impl StremioServer {
 /// Fichiers de réglages (petits) repris de l'ancien dossier de données du serveur,
 /// `%LOCALAPPDATA%\Stremio`, au premier lancement. Copie sans déplacer (le cache, volumineux,
 /// est reconstruit) : une vraie installation de Stremio peut partager l'ancien dossier.
+/// Ne remplace jamais un fichier déjà présent ; un échec de copie est retenté au lancement suivant.
 fn adopt_legacy_server_data(dir: &Path, legacy: &Path) {
     const MAX_FILE_BYTES: u64 = 1024 * 1024;
-    if dir.exists() || !legacy.is_dir() || fs::create_dir_all(dir).is_err() {
+    if !legacy.is_dir() {
         return;
     }
     let Ok(entries) = fs::read_dir(legacy) else {
@@ -47,8 +48,12 @@ fn adopt_legacy_server_data(dir: &Path, legacy: &Path) {
     };
     for entry in entries.flatten() {
         let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_file() && meta.len() <= MAX_FILE_BYTES {
-            fs::copy(entry.path(), dir.join(entry.file_name())).ok();
+        let target = dir.join(entry.file_name());
+        if meta.is_file() && meta.len() <= MAX_FILE_BYTES && !target.exists() {
+            if fs::create_dir_all(dir).is_err() {
+                return;
+            }
+            fs::copy(entry.path(), target).ok();
         }
     }
 }
@@ -106,8 +111,10 @@ mod tests {
         let dir = root.join("Laststream");
         fs::create_dir_all(legacy.join("stremio-cache")).unwrap();
         fs::write(legacy.join("server-settings.json"), "{}").unwrap();
+        fs::write(legacy.join("big.bin"), vec![0u8; 1024 * 1024 + 1]).unwrap();
 
         adopt_legacy_server_data(&dir, &legacy);
+        assert!(!dir.join("big.bin").exists());
         assert_eq!(
             fs::read_to_string(dir.join("server-settings.json")).unwrap(),
             "{}"
