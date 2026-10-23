@@ -291,7 +291,7 @@ impl MainWindow {
                 .expect("Cannot initialie the single application IPC"),
         );
 
-        // Auto-update runs only when an endpoint is given explicitly (--autoupdater-endpoint).
+        // Auto-update runs on the default feed unless disabled (--no-autoupdater); the endpoint is None then.
         let updater_enabled = self.autoupdater_endpoint.is_some();
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;
@@ -307,16 +307,19 @@ impl MainWindow {
                     }
                 }
 
+                let mut ready_version = None;
                 loop {
                     let current_version = env!("CARGO_PKG_VERSION")
                         .parse()
                         .expect("Should always be valid");
 
-                    let updater =
+                    let mut updater =
                         updater::Updater::new(current_version, &updater_endpoint, force_update);
+                    updater.ready_version = ready_version.clone();
                     match updater.autoupdate() {
                         Ok(Some(update)) => {
                             println!("New version ready to install v{}", update.version);
+                            ready_version = Some(update.version.clone());
                             let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
                             *autoupdater_setup_file = Some(update.file.clone());
                             web_tx_upd.send(RPCResponse::update_available()).ok();
