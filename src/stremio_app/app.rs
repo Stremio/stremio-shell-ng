@@ -291,7 +291,7 @@ impl MainWindow {
                 .expect("Cannot initialie the single application IPC"),
         );
 
-        // Auto-update runs only when an endpoint is given explicitly (--autoupdater-endpoint).
+        // Auto-update runs on the default feed unless disabled (--no-autoupdater); the endpoint is None then.
         let updater_enabled = self.autoupdater_endpoint.is_some();
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;

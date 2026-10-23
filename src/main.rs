@@ -42,9 +42,14 @@ struct Opt {
     webui_url: Option<String>,
     #[clap(
         long,
-        help = "Enable the autoupdater and check this endpoint (no update check without it)"
+        help = "Check this endpoint for updates instead of the default Laststream feed"
     )]
     autoupdater_endpoint: Option<Url>,
+    #[clap(
+        long,
+        help = "Disable the autoupdater: no update check and no network call for it"
+    )]
+    no_autoupdater: bool,
     #[clap(long, help = "Forces reinstalling current version")]
     force_update: bool,
     #[clap(
@@ -116,7 +121,10 @@ fn main() {
         no_splash: opt.no_splash,
         dev_tools: opt.development || opt.dev_tools,
         start_hidden: opt.start_hidden,
-        autoupdater_endpoint: opt.autoupdater_endpoint,
+        autoupdater_endpoint: stremio_app::updater::resolve_endpoint(
+            opt.autoupdater_endpoint,
+            opt.no_autoupdater,
+        ),
         force_update: opt.force_update,
         ..Default::default()
     })
