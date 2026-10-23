@@ -278,7 +278,7 @@ mod tests {
         let (endpoint, _) = serve("1.0.18", &sha256_hex(b"something else"));
         let (updater, dir) = updater_for(&endpoint, "1.0.17", "bad");
         let error = updater.autoupdate().unwrap_err();
-        assert!(error.to_string().contains("Checksum"), "{error}");
+        assert!(error.to_string().contains("Checksum"), "{}", error);
         assert!(!dir.join("Laststream.exe").exists());
         assert!(!dir.join("Laststream.exe.part").exists());
         std::fs::remove_dir_all(dir).ok();
