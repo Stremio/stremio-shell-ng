@@ -36,3 +36,15 @@ changing the user's selection.
 
 mpv handles fonts embedded in the media or subtitle file and installed system
 fonts. Subtitles with separate font URLs stay in the WebUI libass renderer.
+
+## Publier une version Windows
+
+L'installeur se construit en local (le dossier `dist\laststream-desktop` contient l'UI, Node, ffmpeg et lastAddon, qui ne sont pas dans ce dépôt) puis se publie en une commande.
+
+1. Aligner la version dans `Cargo.toml`, `Cargo.lock` et `setup/Laststream.iss` (`MyAppVersion`). La CI refuse un écart (`node scripts/windows-manifest.mjs check`). `Cargo.toml` fait foi pour la version exposée à l'interface.
+2. `.\build.ps1` : compile en release puis construit `dist\installer\Laststream-Setup-X.Y.Z.exe` avec ISCC.
+3. `.\upload.ps1 -Notes "…"` (`-DryRun` pour simuler) : envoie l'installeur dans R2 (`laststream-app-files`, clé `windows/`), puis le flux `windows/latest.json`. Le Worker `laststream-edge` les sert sur `https://laststream.gtux-prog.workers.dev/app/windows/`.
+
+Le flux (`scripts/windows-manifest.mjs`) suit le schéma du `latest.json` Android (`versionName`, `versionCode`, `url`, `sha256`, `size`, `notes`) et ajoute `version`, `publishedAt`, `versionDesc` et `files[]`, le format que lit déjà l'updater natif (`--autoupdater-endpoint`) : le même fichier est l'endpoint et le descripteur. `versionCode` vaut `major*1000000 + minor*1000 + patch`. L'updater natif compare le SHA-256 au fichier téléchargé avant de lancer l'installeur ; il est opt-in (sans `--autoupdater-endpoint`, aucune vérification) et n'est pas encore branché par défaut sur ce flux.
+
+Signature : aucun certificat de signature de code n'est utilisé à ce jour, SmartScreen peut donc alerter au premier lancement. L'intégrité repose sur le SHA-256 du flux. Pour signer, définir l'outil `laststreamsign` dans Inno Setup puis compiler avec `/DSIGN`.
