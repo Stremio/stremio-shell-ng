@@ -307,16 +307,19 @@ impl MainWindow {
                     }
                 }
 
+                let mut ready_version = None;
                 loop {
                     let current_version = env!("CARGO_PKG_VERSION")
                         .parse()
                         .expect("Should always be valid");
 
-                    let updater =
+                    let mut updater =
                         updater::Updater::new(current_version, &updater_endpoint, force_update);
+                    updater.ready_version = ready_version.clone();
                     match updater.autoupdate() {
                         Ok(Some(update)) => {
                             println!("New version ready to install v{}", update.version);
+                            ready_version = Some(update.version.clone());
                             let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
                             *autoupdater_setup_file = Some(update.file.clone());
                             web_tx_upd.send(RPCResponse::update_available()).ok();

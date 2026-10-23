@@ -123,7 +123,7 @@ fn main() {
         start_hidden: opt.start_hidden,
         autoupdater_endpoint: stremio_app::updater::resolve_endpoint(
             opt.autoupdater_endpoint,
-            opt.no_autoupdater,
+            opt.no_autoupdater || opt.development,
         ),
         force_update: opt.force_update,
         ..Default::default()

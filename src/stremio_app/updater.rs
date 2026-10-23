@@ -39,6 +39,8 @@ pub struct Updater {
     pub download_dir: PathBuf,
     /// Pause before the download starts.
     pub settle_delay: std::time::Duration,
+    /// Version whose verified installer is already waiting to be run: not downloaded again.
+    pub ready_version: Option<Version>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +75,7 @@ impl Updater {
             force_update,
             download_dir: std::env::temp_dir(),
             settle_delay: std::time::Duration::from_secs(2),
+            ready_version: None,
         }
     }
 
@@ -110,6 +113,13 @@ impl Updater {
             .context("The path is not valid UTF-8")?
             .to_string();
         let dest = self.download_dir.join(file_name);
+        if self.ready_version.as_ref() == Some(&version) && dest.is_file() {
+            println!("Update v{version} is already downloaded and verified");
+            return Ok(None);
+        }
+        // Downloaded aside and renamed once verified, so `dest` is never a partial or unverified file
+        // (a previously verified installer may still be waiting to be run from it).
+        let partial = dest.with_extension("exe.part");
 
         std::thread::sleep(self.settle_delay);
         // Download the new setup file
@@ -118,10 +128,10 @@ impl Updater {
         let mut downloaded: u64 = 0;
         let mut sha256 = Sha256::new();
 
-        println!("Downloading {} to {}", installer.url, dest.display());
+        println!("Downloading {} to {}", installer.url, partial.display());
 
         let mut chunk = [0u8; 8192];
-        let mut file = std::fs::File::create(&dest)?;
+        let mut file = std::fs::File::create(&partial)?;
         loop {
             let chunk_size = installer_response.read(&mut chunk)?;
             if chunk_size == 0 {
@@ -140,9 +150,11 @@ impl Updater {
         println!();
         let actual_sha256 = format!("{:x}", sha256.finalize());
         if !actual_sha256.eq_ignore_ascii_case(installer.checksum.trim()) {
-            std::fs::remove_file(dest)?;
+            std::fs::remove_file(&partial)?;
             return Err(anyhow::anyhow!("Checksum verification failed"));
         }
+        drop(file);
+        std::fs::rename(&partial, &dest)?;
         println!("Checksum verified.");
 
         let update = Some(Update {
@@ -268,6 +280,32 @@ mod tests {
         let error = updater.autoupdate().unwrap_err();
         assert!(error.to_string().contains("Checksum"), "{error}");
         assert!(!dir.join("Laststream.exe").exists());
+        assert!(!dir.join("Laststream.exe.part").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_check_keeps_the_installer_already_waiting() {
+        let (endpoint, _) = serve("1.0.19", &sha256_hex(b"something else"));
+        let (updater, dir) = updater_for(&endpoint, "1.0.17", "keep");
+        std::fs::write(dir.join("Laststream.exe"), b"verified earlier").unwrap();
+        assert!(updater.autoupdate().is_err());
+        assert_eq!(
+            std::fs::read(dir.join("Laststream.exe")).unwrap(),
+            b"verified earlier"
+        );
+        assert!(!dir.join("Laststream.exe.part").exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn version_already_downloaded_is_not_fetched_again() {
+        let (endpoint, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (mut updater, dir) = updater_for(&endpoint, "1.0.17", "ready");
+        std::fs::write(dir.join("Laststream.exe"), INSTALLER).unwrap();
+        updater.ready_version = Some(Version::new(1, 0, 18));
+        assert!(updater.autoupdate().unwrap().is_none());
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "installer not requested");
         std::fs::remove_dir_all(dir).ok();
     }
 
