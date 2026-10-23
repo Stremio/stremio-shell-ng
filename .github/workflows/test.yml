@@ -17,7 +17,7 @@ jobs:
     - name: Check versions (Cargo.toml, Cargo.lock, Laststream.iss)
       run: node scripts/windows-manifest.mjs check
     - name: Test update feed script
-      run: node --test scripts/
+      run: node --test "scripts/*.test.mjs"
     - name: Stable with rustfmt and clippy
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
