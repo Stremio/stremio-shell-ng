@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  buildManifest, checkVersions, parseInstallerName, readCargoVersion, readIssVersion, versionCode,
+  arg, buildManifest, checkVersions, parseInstallerName, readCargoVersion, readIssVersion, versionCode,
 } from './windows-manifest.mjs';
 
 const SHA = 'a'.repeat(64);
@@ -64,4 +64,18 @@ test('checkVersions signale chaque ecart', () => {
   const lock = checkVersions({ cargoToml: TOML, cargoLock: LOCK('1.0.16'), iss: ISS('1.0.17') });
   assert.equal(lock.length, 1);
   assert.match(lock[0], /Cargo\.lock/);
+});
+
+test('checkVersions echoue si le paquet est absent de Cargo.lock', () => {
+  const problems = checkVersions({ cargoToml: TOML, cargoLock: '[[package]]\nname = "autre"\nversion = "9.9.9"\n', iss: ISS('1.0.17') });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /introuvable dans Cargo\.lock/);
+});
+
+test('arg ignore une valeur absente ou qui est un autre drapeau (PowerShell 5.1 supprime les arguments vides)', () => {
+  assert.equal(arg(['x.exe', '--notes', 'ok', '--out', 'f'], '--notes'), 'ok');
+  assert.equal(arg(['x.exe', '--notes', '--out', 'f'], '--notes'), undefined);
+  assert.equal(arg(['x.exe', '--notes', '--out', 'f'], '--out'), 'f');
+  assert.equal(arg(['x.exe', '--notes'], '--notes'), undefined);
+  assert.equal(arg(['x.exe'], '--notes'), undefined);
 });

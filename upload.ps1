@@ -8,7 +8,8 @@
 #   .\upload.ps1 -Notes "Correctifs"   # notes de version du flux
 #   .\upload.ps1 -DryRun               # affiche les commandes et le flux sans rien envoyer
 # Signature : aucun certificat de signature de code n'est utilise a ce jour (SmartScreen peut alerter) ;
-# l'integrite repose sur le SHA-256 du flux, verifie par l'app avant de lancer l'installeur.
+# l'integrite repose sur le SHA-256 du flux, verifie par l'updater natif avant de lancer l'installeur (l'updater
+# n'est actif qu'avec --autoupdater-endpoint <URL du flux> : pas encore branche par defaut, voir ODY-258).
 param(
     [string]$Installer,
     [string]$Notes = '',
@@ -38,7 +39,7 @@ $iss = Select-String -Path (Join-Path $PSScriptRoot 'setup\Laststream.iss') -Pat
 if ($iss -ne $version) { throw "L'installeur est en $version mais setup\Laststream.iss est en $iss : reconstruire l'installeur." }
 
 $manifest = Join-Path ([IO.Path]::GetTempPath()) "laststream-latest-$version.json"
-node $manifestTool build $Installer --notes $Notes --out $manifest
+node $manifestTool build $Installer --notes $Notes --out $manifest --base-url $publicBase
 if ($LASTEXITCODE -ne 0) { throw 'Generation du flux latest.json echouee.' }
 
 $put = @('--yes', 'wrangler@4', 'r2', 'object', 'put')

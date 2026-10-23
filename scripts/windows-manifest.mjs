@@ -80,7 +80,8 @@ export function checkVersions({ cargoToml, cargoLock, iss }) {
   if (issVersion !== cargo) problems.push(`Laststream.iss (${issVersion}) differe de Cargo.toml (${cargo})`);
   const name = /^name\s*=\s*"([^"]+)"/m.exec(packageSection(cargoToml))?.[1];
   const lock = name && new RegExp(`\\[\\[package\\]\\]\\r?\\nname = "${name}"\\r?\\nversion = "([^"]+)"`).exec(cargoLock);
-  if (lock && lock[1] !== cargo) problems.push(`Cargo.lock (${lock[1]}) differe de Cargo.toml (${cargo})`);
+  if (!lock) problems.push(`Entree ${name ?? '(nom du paquet)'} introuvable dans Cargo.lock`);
+  else if (lock[1] !== cargo) problems.push(`Cargo.lock (${lock[1]}) differe de Cargo.toml (${cargo})`);
   try {
     versionCode(cargo);
   } catch (e) {
@@ -89,7 +90,7 @@ export function checkVersions({ cargoToml, cargoLock, iss }) {
   return problems;
 }
 
-const arg = (args, flag) => {
+export const arg = (args, flag) => {
   const i = args.indexOf(flag);
   const value = i >= 0 ? args[i + 1] : undefined;
   // Windows PowerShell 5.1 supprime un argument vide : `--notes --out f` ne doit pas lire `--out` comme notes.
