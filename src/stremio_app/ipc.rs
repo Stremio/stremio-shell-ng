@@ -38,6 +38,92 @@ impl RPCRequest {
             .and_then(|args| if args.len() > 1 { Some(&args[1]) } else { None })
     }
 }
+/// Forme attendue du paramètre (`args[1]`) d'une commande de la liste blanche.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    /// Aucun paramètre lu.
+    Unused,
+    /// Le gestionnaire valide son argument et répond lui-même en cas d'erreur
+    /// (`download-*`, `native-range`) : la liste ne doit pas les faire taire.
+    SelfChecked,
+    /// Objet JSON requis.
+    Object,
+    /// Chaîne JSON requise.
+    Str,
+    /// Booléen JSON requis.
+    Bool,
+    /// Tableau JSON requis.
+    Array,
+}
+
+/// Commandes que la page peut envoyer au shell, avec la forme attendue de leur paramètre.
+///
+/// Seule source de vérité : une méthode absente de cette liste est refusée et journalisée
+/// avant tout traitement (`app.rs`). Une méthode présente doit avoir son traitement dans
+/// `app.rs`. Ajouter une commande = la déclarer ici avec sa forme, puis la traiter.
+/// Les `download-*` (`downloads::is_worker_method`) et `mpv-*` (`stremio_player`) sont listés un à un.
+pub const ALLOWED_COMMANDS: &[(&str, ParamKind)] = &[
+    // Fenêtre et interface
+    ("win-set-interface-scale", ParamKind::Object),
+    ("win-set-visibility", ParamKind::Object),
+    ("win-set-pip", ParamKind::Object),
+    ("win-drag", ParamKind::Unused),
+    ("win-focus", ParamKind::Unused),
+    // Cycle de vie
+    ("app-ready", ParamKind::Unused),
+    ("app-error", ParamKind::Unused),
+    ("quit", ParamKind::Unused),
+    ("autoupdater-notif-clicked", ParamKind::Unused),
+    // Liens et lecteur externes
+    ("open-external", ParamKind::Str),
+    ("play-external", ParamKind::Str),
+    // Sélecteur de dossier du cache
+    ("pick-cache-directory", ParamKind::Object),
+    // Téléchargements
+    ("download-folder-pick", ParamKind::Unused),
+    ("download-folder-get", ParamKind::Unused),
+    ("download-usage", ParamKind::Unused),
+    ("download-open", ParamKind::SelfChecked),
+    ("download-write", ParamKind::SelfChecked),
+    ("download-truncate", ParamKind::SelfChecked),
+    ("download-size", ParamKind::SelfChecked),
+    ("download-finalize", ParamKind::SelfChecked),
+    ("download-path", ParamKind::SelfChecked),
+    ("download-remove", ParamKind::SelfChecked),
+    // Ponts HTTP et lecture par plages
+    ("native-http", ParamKind::Object),
+    ("native-addon-http", ParamKind::Object),
+    ("native-box-playlist", ParamKind::Object),
+    ("native-range", ParamKind::SelfChecked),
+    ("native-range-cancel", ParamKind::Object),
+    ("native-range-caps", ParamKind::Unused),
+    // Lecteur mpv
+    ("mpv-set-prop", ParamKind::Array),
+    ("mpv-command", ParamKind::Array),
+    ("mpv-observe-prop", ParamKind::Str),
+    ("mpv-set-gpu-video-processing", ParamKind::Bool),
+];
+
+/// Vérifie qu'une méthode est dans la liste blanche et que son paramètre a la forme attendue.
+/// Renvoie la raison du refus, sans la valeur du paramètre (rien de sensible dans le journal).
+pub fn check_command(method: &str, params: Option<&serde_json::Value>) -> Result<(), &'static str> {
+    let Some((_, kind)) = ALLOWED_COMMANDS.iter().find(|(name, _)| *name == method) else {
+        return Err("command not in the allowlist");
+    };
+    let shape_ok = match kind {
+        ParamKind::Unused | ParamKind::SelfChecked => true,
+        ParamKind::Object => params.is_some_and(|p| p.is_object()),
+        ParamKind::Str => params.is_some_and(|p| p.is_string()),
+        ParamKind::Bool => params.is_some_and(|p| p.is_boolean()),
+        ParamKind::Array => params.is_some_and(|p| p.is_array()),
+    };
+    if shape_ok {
+        Ok(())
+    } else {
+        Err("argument has the wrong JSON type")
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RPCResponseDataTransport {
     pub properties: Vec<Vec<String>>,
@@ -193,6 +279,64 @@ impl RPCResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_params(kind: ParamKind) -> Option<serde_json::Value> {
+        match kind {
+            ParamKind::Unused | ParamKind::SelfChecked => None,
+            ParamKind::Object => Some(json!({})),
+            ParamKind::Str => Some(json!("https://example.com/")),
+            ParamKind::Bool => Some(json!(true)),
+            ParamKind::Array => Some(json!([])),
+        }
+    }
+
+    #[test]
+    fn listed_commands_are_accepted_with_their_parameter_shape() {
+        for (name, kind) in ALLOWED_COMMANDS {
+            let params = sample_params(*kind);
+            assert!(
+                check_command(name, params.as_ref()).is_ok(),
+                "{} must be accepted with a {:?} parameter",
+                name,
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn unlisted_commands_are_refused() {
+        for method in [
+            "eval-script",
+            "download-delete",
+            "mpv-unknown",
+            "QUIT",
+            "quit ",
+            "",
+        ] {
+            assert!(
+                check_command(method, None).is_err(),
+                "{:?} is not in the allowlist and must be refused",
+                method
+            );
+        }
+    }
+
+    #[test]
+    fn a_listed_command_with_the_wrong_parameter_type_is_refused() {
+        assert!(check_command("open-external", Some(&json!(42))).is_err());
+        assert!(check_command("win-set-pip", None).is_err());
+        assert!(check_command("mpv-command", Some(&json!("stop"))).is_err());
+        assert!(check_command("mpv-set-gpu-video-processing", Some(&json!("yes"))).is_err());
+    }
+
+    #[test]
+    fn the_allowlist_has_no_duplicate_names() {
+        let mut names: Vec<&str> = ALLOWED_COMMANDS.iter().map(|(name, _)| *name).collect();
+        let listed = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), listed);
+    }
 
     #[test]
     fn handshake_announces_the_download_store() {

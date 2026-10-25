@@ -28,9 +28,10 @@ struct Opt {
     no_splash: bool,
     #[clap(
         long,
-        help = "Deprecated: dev tools are always available from the context menu"
+        alias = "dev-tools",
+        help = "Enable the WebView2 developer tools in a release build (debug builds always have them)"
     )]
-    dev_tools: bool,
+    devtools: bool,
     #[clap(long, help = "Disable the server and load the WebUI from localhost")]
     development: bool,
     #[clap(long, help = "Shortcut for --webui-url=https://staging.strem.io/")]
@@ -119,7 +120,7 @@ fn main() {
         commands_path: Some(commands_path),
         webui_url,
         no_splash: opt.no_splash,
-        dev_tools: opt.development || opt.dev_tools,
+        dev_tools: opt.development || opt.devtools,
         start_hidden: opt.start_hidden,
         autoupdater_endpoint: stremio_app::updater::resolve_endpoint(
             opt.autoupdater_endpoint,
@@ -130,4 +131,24 @@ fn main() {
     })
     .expect("Failed to build UI");
     nwg::dispatch_thread_events();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devtools_option_is_opt_in_and_keeps_the_old_spelling() {
+        assert!(
+            Opt::try_parse_from(["laststream", "--devtools"])
+                .unwrap()
+                .devtools
+        );
+        assert!(
+            Opt::try_parse_from(["laststream", "--dev-tools"])
+                .unwrap()
+                .devtools
+        );
+        assert!(!Opt::try_parse_from(["laststream"]).unwrap().devtools);
+    }
 }

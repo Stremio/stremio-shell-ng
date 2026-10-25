@@ -30,7 +30,7 @@ use crate::stremio_app::{
         WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     downloads,
-    ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
+    ipc::{check_command, CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
     shell_config,
     splash::SplashImage,
@@ -380,6 +380,13 @@ impl MainWindow {
                 .ok()
                 .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())
             {
+                // Liste blanche (ipc.rs) : une commande refusée n'atteint aucun traitement.
+                if let Some(method) = msg.get_method() {
+                    if let Err(reason) = check_command(method, msg.get_params()) {
+                        eprintln!("Refused IPC command {method:?}: {reason}");
+                        continue;
+                    }
+                }
                 let local_server_url = local_server_url.lock().unwrap().clone();
                 match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI

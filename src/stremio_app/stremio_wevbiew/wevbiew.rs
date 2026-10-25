@@ -118,6 +118,7 @@ impl PartialUi for WebView {
             .ok();
         let controller_clone = data.controller.clone();
         let endpoint = data.endpoint.clone();
+        let dev_tools_flag = data.dev_tools.clone();
         let webview_flags = "--autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments(webview_flags)
@@ -142,7 +143,11 @@ impl PartialUi for WebView {
                             .expect("Cannot obtain webview from controller");
                     let settings = webview.get_settings().unwrap();
                     settings.put_is_status_bar_enabled(false).ok();
-                    settings.put_are_dev_tools_enabled(true).ok();
+                    let dev_tools = devtools_allowed(
+                        cfg!(debug_assertions),
+                        dev_tools_flag.get().copied().unwrap_or(false),
+                    );
+                    settings.put_are_dev_tools_enabled(dev_tools).ok();
                     settings.put_are_default_context_menus_enabled(true).ok();
                     // Web handles zoom shortcuts so they update the saved interface scale.
                     settings.put_is_zoom_control_enabled(false).ok();
@@ -213,11 +218,9 @@ impl PartialUi for WebView {
                         }).expect("Cannot add full screen element changed");
 
                         webview.add_content_loading(move |wv, _| {
-                            wv.execute_script(format!(
-                                    "window.stremio_server_ipc_key='{}'",
-                                    std::env::var(SERVER_IPC_KEY).unwrap_or_default()
-                            ).as_str(), |_| Ok(())
-                            ).expect("Cannot add SERVER_IPC_KEY to webview");
+                            let key = std::env::var(SERVER_IPC_KEY).unwrap_or_default();
+                            wv.execute_script(&server_ipc_key_script(&key), |_| Ok(()))
+                                .expect("Cannot add SERVER_IPC_KEY to webview");
 
                             wv.execute_script(r##"
                             window.addEventListener('contextmenu', event => {
@@ -384,6 +387,25 @@ fn same_origin(trusted: &Option<url::Origin>, uri: &str) -> bool {
     }
 }
 
+/// Script qui fixe la clé IPC du serveur dans la page. La clé passe par serde_json (guillemets, antislashs,
+/// caractères de contrôle). `<`, `>` et les séparateurs Unicode sont ensuite écrits en échappements `\u`, pour
+/// qu'aucune valeur ne puisse fermer une balise `</script>` si ce script venait à être inséré dans du HTML.
+fn server_ipc_key_script(key: &str) -> String {
+    let literal = json!(key)
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    format!("window.stremio_server_ipc_key = {literal};")
+}
+
+/// Les outils de développement sont toujours disponibles dans un build de débogage ; en release, seulement
+/// avec l'option `--devtools` (ou `--development`, voir main.rs).
+fn devtools_allowed(debug_build: bool, devtools_flag: bool) -> bool {
+    debug_build || devtools_flag
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +440,27 @@ mod tests {
         assert!(same_origin(&origin, "http://127.0.0.1:7000/#/"));
         assert!(!same_origin(&origin, "http://127.0.0.1:7001/"));
         assert!(!same_origin(&origin, PUBLIC_URL));
+    }
+
+    #[test]
+    fn server_ipc_key_is_injected_as_a_json_string_literal() {
+        let key = "a\"b</script>\\c\u{2028}";
+        let script = server_ipc_key_script(key);
+        let literal = script
+            .strip_prefix("window.stremio_server_ipc_key = ")
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("the key is assigned to window.stremio_server_ipc_key");
+        assert!(!script.contains("</script"));
+        let decoded: String =
+            serde_json::from_str(literal).expect("the assigned value is a JSON string");
+        assert_eq!(decoded, key);
+    }
+
+    #[test]
+    fn devtools_are_on_in_debug_builds_and_opt_in_otherwise() {
+        assert!(devtools_allowed(true, false));
+        assert!(devtools_allowed(false, true));
+        assert!(!devtools_allowed(false, false));
     }
 
     #[test]
