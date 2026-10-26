@@ -51,6 +51,22 @@ Publication signée : la clé privée PEM (PKCS#8) est le secret GitHub `LASTSTR
 
 Signature : aucun certificat de signature de code n'est utilisé à ce jour, SmartScreen peut donc alerter au premier lancement. L'intégrité repose sur le SHA-256 du flux. Pour signer, définir l'outil `laststreamsign` dans Inno Setup puis compiler avec `/DSIGN`.
 
+## Release
+
+Une version Windows se publie par tag, en quatre étapes. Le workflow `.github/workflows/release.yml` ne se lance qu'à la main (`workflow_dispatch`, entrée `tag`) : un push de tag ne le déclenche pas, pour qu'il ne démarre pas avant le staging. Il construit l'installeur et publie la release ; les dépendances des dépôts voisins (`laststream-app`, `lastaddon`) sont préparées en local par `scripts/stage-release-deps.ps1`, sans jeton inter-dépôts.
+
+1. **Tag** : aligner la version dans `Cargo.toml`, `Cargo.lock` et `setup/Laststream.iss`, pousser sur `main`, puis `git tag vX.Y.Z` et `git push origin vX.Y.Z`. Le workflow refuse un tag qui ne correspond pas à la version.
+2. **Dépendances** (local, depuis le dépôt shell) : `.\scripts\stage-release-deps.ps1 -Version X.Y.Z` (`-DryRun` pour simuler, sans rien publier). Il exige `..\laststream-app` et `..\lastaddon` propres (fichiers suivis), sur `main` et à jour de `origin/main`, puis produit `ui.zip` (build de laststream-app), `lastaddon.zip` (`lastaddon.cjs` et `node.exe`) et `deps.json` (commits des deux dépôts, SHA-256). Il crée la release brouillon `vX.Y.Z` et y dépose les trois fichiers.
+3. **Workflow** (`gh workflow run release.yml -f tag=vX.Y.Z`, ou « Run workflow » dans l'onglet Actions) : l'installeur `Laststream-Setup-X.Y.Z.exe`, son `.sha256`, `latest.json` et `latest.json.sig` (signature ed25519, secret `LASTSTREAM_UPDATE_SIGNING_KEY`) sont déposés sur la release, puis la release passe de brouillon à publiée. Le workflow vérifie les SHA-256 contre `deps.json` et échoue si les archives manquent (« lancer scripts/stage-release-deps.ps1 d'abord »). Le format du tag est vérifié avant tout téléchargement.
+4. **R2** : téléversement à la main, depuis un poste avec `wrangler login` et `LASTSTREAM_UPDATE_SIGNING_KEY` : `.\upload.ps1 -Installer <Laststream-Setup-X.Y.Z.exe téléchargé> -Notes "…"`. Aucun jeton Cloudflare n'est dans le workflow.
+
+Limites connues :
+- `node.exe` est une copie locale (Node.js v22.23.3 win-x64) : aucun dépôt ne le fournit, son origine n'est pas tracée ; sa version et son SHA-256 figurent dans `deps.json` ;
+- pas d'Authenticode (décision produit) : SmartScreen peut alerter ;
+- `latest.json` pointe vers l'URL R2, qui ne répond qu'après l'étape 4.
+
+Binaires volumineux : le dépôt contient déjà des binaires (`bin/`, `bin-arm64/`, `mpv-x64/`, `mpv-arm64/`, `libmpv-2_*.zip`, `server.js`). Leur historique n'est pas réécrit. Ne plus en ajouter : les bundles de build vont dans `dist/`, ignoré par git.
+
 ## Mentions de l'amont
 
 Les références restantes à l'ancien projet amont sont listées et justifiées dans [docs/stremio-mentions.md](docs/stremio-mentions.md).

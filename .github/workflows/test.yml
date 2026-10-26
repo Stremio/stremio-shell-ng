@@ -1,25 +1,41 @@
 name: Continuous integration
 
-on: [pull_request, push]
+# Deux declencheurs seulement : une pull request (toute branche) et un push sur main.
+# Un push de branche de travail sans PR ne lance rien : une seule execution par changement.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# La CI ne publie rien : lecture seule sur le depot (la publication est dans release.yml).
+permissions:
+  contents: read
+
+env:
+  # Version epinglee de cargo-audit (cache de l'binaire) ; la monter explicitement.
+  CARGO_AUDIT_VERSION: 0.22.2
 
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
     # The Windows runners have autocrlf enabled by default
     # which causes failures for some of rustfmt's line-ending sensitive tests
     - name: disable git eol translation
       run: git config --global core.autocrlf false
     - name: checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         fetch-depth: 0
+        # Le jeton du workflow ne reste pas dans .git/config.
+        persist-credentials: false
     - name: Check versions (Cargo.toml, Cargo.lock, Laststream.iss)
       run: node scripts/windows-manifest.mjs check
     - name: Test update feed script
       run: node --test "scripts/*.test.mjs"
     - name: Stable with rustfmt and clippy
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
         toolchain: stable
         target: x86_64-pc-windows-msvc
@@ -27,7 +43,27 @@ jobs:
     - name: Lint code format
       run: cargo fmt --all -- --check
     - name: Lint code
-      run: cargo clippy --all -- -D warnings
+      run: cargo clippy --all --locked -- -D warnings
+    - name: Build
+      run: cargo build --locked --target x86_64-pc-windows-msvc
     - name: Test
-      run: cargo test --target x86_64-pc-windows-msvc
-
+      run: cargo test --locked --target x86_64-pc-windows-msvc
+    - name: Cache cargo-audit
+      id: cache-audit
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ~/.cargo/bin/cargo-audit.exe
+        key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}-${{ runner.os }}
+    - name: Install cargo-audit
+      if: steps.cache-audit.outputs.cache-hit != 'true'
+      run: cargo install cargo-audit --version ${{ env.CARGO_AUDIT_VERSION }} --locked
+    # Echoue sur un avis RustSec de vulnerabilite ; les avis informatifs (non maintenu, retire) sont affiches.
+    # Une exception n'est ajoutee qu'a .cargo/audit.toml, ID par ID, avec sa justification.
+    - name: Audit dependencies (RustSec)
+      run: cargo audit
+    # pwsh et non bash : Git Bash met /usr/bin/link devant le link.exe MSVC et casse l'edition de liens ARM64.
+    - name: ARM64 build (release, no tests)
+      shell: pwsh
+      run: |
+        rustup target add aarch64-pc-windows-msvc
+        cargo build --release --locked --target aarch64-pc-windows-msvc

@@ -1,0 +1,229 @@
+name: Release
+
+# Publication d'une version Windows, lancee a la main (workflow_dispatch, avec un tag deja pousse, ex. v1.0.25).
+# Un push de tag ne la lance pas : elle ne part qu'apres le staging des dependances.
+# Les archives des depots voisins (ui.zip, lastaddon.zip, deps.json) sont preparees en local par
+# scripts/stage-release-deps.ps1 et posees sur la release brouillon du tag. Ce workflow ne lit aucun autre depot,
+# n'a aucun jeton inter-depots et ne telecharge que les trois fichiers de la release.
+# Produit l'installeur, son SHA-256, le flux latest.json signe (ed25519) et publie la release.
+# Le televersement R2 reste manuel (upload.ps1) : aucun jeton Cloudflare dans ce workflow.
+# Pas d'Authenticode (decision produit) : l'installeur n'est pas signe de code.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag deja pousse a publier, format vX.Y.Z (ex. v1.0.25)'
+        required: true
+        type: string
+
+# Lecture seule par defaut. Les jobs qui ecrivent sont explicites ci-dessous.
+permissions:
+  contents: read
+
+# Une seule publication par tag a la fois ; une execution en cours n'est jamais annulee.
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  fetch-deps:
+    # contents: write : une release brouillon n'est lisible qu'avec un acces en ecriture (non verifie sur ce depot).
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+    - name: Validate the tag input (vX.Y.Z)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+\z') { throw "Tag invalide '$env:RELEASE_TAG' : format vX.Y.Z attendu (ex. v1.0.25)." }
+    - name: Download the staged dependencies from the release
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -ItemType Directory -Force deps | Out-Null
+        gh release download $env:RELEASE_TAG --dir deps --pattern ui.zip --pattern lastaddon.zip --pattern deps.json
+        foreach ($f in 'ui.zip', 'lastaddon.zip', 'deps.json') {
+          if (-not (Test-Path -LiteralPath (Join-Path deps $f))) {
+            throw "Archive $f absente de la release $env:RELEASE_TAG : lancer scripts/stage-release-deps.ps1 -Version <X.Y.Z> d'abord."
+          }
+        }
+    - name: Check the staged files against deps.json
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $deps = Get-Content -LiteralPath deps/deps.json -Raw | ConvertFrom-Json
+        if ($deps.tag -ne $env:RELEASE_TAG) { throw "deps.json vise $($deps.tag), pas $env:RELEASE_TAG : restager avec la bonne version." }
+        foreach ($name in 'ui.zip', 'lastaddon.zip') {
+          $entry = $deps.files.$name
+          $actual = (Get-FileHash -LiteralPath (Join-Path deps $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $entry.sha256) { throw "SHA-256 de $name different de deps.json : archive altérée ou restagée sans deps.json." }
+        }
+    - name: Upload the staged dependencies
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: release-deps
+        path: deps
+        if-no-files-found: error
+
+  build:
+    needs: fetch-deps
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+    # The Windows runners have autocrlf enabled by default (voir test.yml)
+    - name: disable git eol translation
+      run: git config --global core.autocrlf false
+    - name: checkout
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        ref: ${{ format('refs/tags/{0}', inputs.tag) }}
+        persist-credentials: false
+    - name: Check the tag matches the versions (Cargo.toml, Cargo.lock, Laststream.iss)
+      shell: bash
+      run: |
+        node scripts/windows-manifest.mjs check
+        cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+        if [ "$RELEASE_TAG" != "v$cargo_version" ]; then
+          echo "::error::Le tag $RELEASE_TAG ne correspond pas a la version $cargo_version de Cargo.toml"
+          exit 1
+        fi
+    - name: Download the staged dependencies
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: release-deps
+        path: deps
+    - name: Stable toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
+        # Construction a neuf de ce qui est signe : pas de cache de toolchain.
+        cache: false
+    - name: Build x64 release
+      run: cargo build --release --locked --target x86_64-pc-windows-msvc
+    # pwsh et non bash : Git Bash met /usr/bin/link devant le link.exe MSVC et casse l'edition de liens ARM64.
+    - name: Build ARM64 release (binary only, no installer)
+      shell: pwsh
+      run: |
+        rustup target add aarch64-pc-windows-msvc
+        cargo build --release --locked --target aarch64-pc-windows-msvc
+    # dist\laststream-desktop : fichiers du depot (bin/, server.js, README-FR.txt de setup/, libmpv), archives ui/ et
+    # lastaddon/ verifiees, et le binaire x64 compile ici, qui remplace laststream.exe.
+    - name: Assemble dist/laststream-desktop
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $bundle = 'dist/laststream-desktop'
+        New-Item -ItemType Directory -Force $bundle | Out-Null
+        Copy-Item -Path 'bin/*' -Destination $bundle -Force
+        Copy-Item -LiteralPath 'server.js' -Destination $bundle -Force
+        Copy-Item -LiteralPath 'setup/README-FR.txt' -Destination $bundle -Force
+        Expand-Archive -LiteralPath 'libmpv-2_x64.zip' -DestinationPath 'dist/mpv-x64' -Force
+        $mpv = Get-ChildItem -Path 'dist/mpv-x64' -Recurse -Filter 'libmpv-2.dll' | Select-Object -First 1
+        if (-not $mpv) { throw 'libmpv-2.dll absent de libmpv-2_x64.zip' }
+        Copy-Item -LiteralPath $mpv.FullName -Destination $bundle -Force
+        Expand-Archive -LiteralPath 'deps/ui.zip' -DestinationPath $bundle -Force
+        Expand-Archive -LiteralPath 'deps/lastaddon.zip' -DestinationPath $bundle -Force
+        Copy-Item -LiteralPath 'target/x86_64-pc-windows-msvc/release/laststream-shell-ng.exe' -Destination (Join-Path $bundle 'laststream.exe') -Force
+        foreach ($f in 'README-FR.txt', 'laststream.exe', 'laststream-runtime.exe', 'ffmpeg.exe', 'libmpv-2.dll', 'server.js', 'ui/index.html', 'lastaddon/lastaddon.cjs', 'lastaddon/node.exe') {
+          if (-not (Test-Path -LiteralPath (Join-Path $bundle $f))) { throw "Bundle incomplet : $f absent de $bundle" }
+        }
+    - name: Build the installer (Inno Setup 6)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $candidates = @(
+          Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
+        )
+        $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $iscc) {
+          # Inno Setup 6 est preinstalle sur l'image windows-latest ; ce repli ne sert que si l'image change.
+          # Version epinglee : 6.7.1, derniere 6.x disponible sur Chocolatey.
+          choco install innosetup --version 6.7.1 --no-progress -y
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+        if (-not $iscc) { throw 'ISCC.exe introuvable (Inno Setup 6)' }
+        & $iscc 'setup\Laststream.iss'
+        if ($LASTEXITCODE -ne 0) { throw "ISCC a echoue (code $LASTEXITCODE)" }
+    - name: Upload the installer
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: installer
+        path: dist/installer/Laststream-Setup-*.exe
+        if-no-files-found: error
+    - name: Upload the ARM64 binary (not published)
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: arm64-binary
+        path: target/aarch64-pc-windows-msvc/release/laststream-shell-ng.exe
+        if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+    - name: disable git eol translation
+      run: git config --global core.autocrlf false
+    - name: checkout
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        ref: ${{ format('refs/tags/{0}', inputs.tag) }}
+        persist-credentials: false
+    - name: Download the installer
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: installer
+        path: release
+    - name: SHA-256, checksum file and latest.json
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installers = @(Get-ChildItem release -Filter 'Laststream-Setup-*.exe')
+        if ($installers.Count -ne 1) { throw "Un seul installeur attendu dans release\ : $($installers.Count) trouve(s)" }
+        $installer = $installers[0].FullName
+        $name = $installers[0].Name
+        $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath "$installer.sha256" -Value "$hash  $name" -Encoding ascii
+        node scripts/windows-manifest.mjs build $installer --out release/latest.json
+        if ($LASTEXITCODE -ne 0) { throw 'Generation de latest.json echouee' }
+        "SHA-256 de ${name} : $hash" >> $env:GITHUB_STEP_SUMMARY
+    # Le secret n'est expose qu'a cette etape ; sans lui, sign-update.mjs echoue et rien n'est publie.
+    - name: Sign latest.json (ed25519)
+      shell: pwsh
+      env:
+        LASTSTREAM_UPDATE_SIGNING_KEY: ${{ secrets.LASTSTREAM_UPDATE_SIGNING_KEY }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        node scripts/sign-update.mjs release/latest.json
+        if ($LASTEXITCODE -ne 0) { throw 'Signature de latest.json echouee (secret absent ou invalide)' }
+        if (-not (Test-Path -LiteralPath release/latest.json.sig)) { throw 'latest.json.sig absent apres signature' }
+    - name: Upload the assets to the release
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $installer = (Get-ChildItem release -Filter 'Laststream-Setup-*.exe')[0].FullName
+        $assets = @($installer, "$installer.sha256", 'release/latest.json', 'release/latest.json.sig')
+        gh release upload $env:RELEASE_TAG $assets --clobber
+        if ($LASTEXITCODE -ne 0) { throw "gh release upload a echoue (code $LASTEXITCODE)" }
+    - name: Publish the release (draft -> public)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        gh release edit $env:RELEASE_TAG --draft=false
+        if ($LASTEXITCODE -ne 0) { throw "gh release edit --draft=false a echoue (code $LASTEXITCODE)" }

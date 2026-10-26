@@ -1,0 +1,17 @@
+# Exceptions cargo-audit (LAST-159). Chaque ID est justifie ; un ID sans justification ne doit pas figurer ici.
+# cargo audit lit Cargo.lock sans filtrer la cible : ces avis ne visent que des crates hors du graphe livre.
+[advisories]
+ignore = [
+  # openssl 0.10.64 : tire par une dependance absente du graphe Windows (cargo tree --target x86_64 / aarch64-pc-windows-msvc
+  # ne renvoie rien). Non compilee dans le shell livre.
+  "RUSTSEC-2024-0357",
+  "RUSTSEC-2025-0004",
+  "RUSTSEC-2025-0022",
+  # zip 4.2.0 et time 0.3.41 : uniquement via zip-extract 0.4.0, build-dependency de build.rs, qui extrait a la compilation
+  # les archives libmpv-2_x64.zip et libmpv-2_arm64.zip versionnees dans le depot (entree de confiance, aucun telechargement).
+  # Absents du graphe de dependances normales (livre). Correctif : remplacer zip-extract (voir issue dediee).
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0009",
+]
