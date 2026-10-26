@@ -7,9 +7,10 @@
 #   .\upload.ps1 -Installer <fichier>  # installeur precis
 #   .\upload.ps1 -Notes "Correctifs"   # notes de version du flux
 #   .\upload.ps1 -DryRun               # affiche les commandes et le flux sans rien envoyer
-# Signature : aucun certificat de signature de code n'est utilise a ce jour (SmartScreen peut alerter) ;
-# l'integrite repose sur le SHA-256 du flux, verifie par l'updater natif avant de lancer l'installeur (l'updater
-# n'est actif qu'avec --autoupdater-endpoint <URL du flux> : pas encore branche par defaut, voir ODY-258).
+# Signature : aucun certificat de signature de code (Authenticode) n'est utilise (SmartScreen peut alerter). Le flux est signe
+# en ed25519 (scripts/sign-update.mjs) : latest.json.sig est publie a cote de latest.json, et l'updater natif refuse toute
+# mise a jour dont la signature ne correspond pas a sa cle publique embarquee (LAST-88). La cle privee PEM est lue dans la
+# variable d'environnement LASTSTREAM_UPDATE_SIGNING_KEY (secret GitHub du meme nom), jamais en argument.
 param(
     [string]$Installer,
     [string]$Notes = '',
@@ -42,11 +43,26 @@ $manifest = Join-Path ([IO.Path]::GetTempPath()) "laststream-latest-$version.jso
 node $manifestTool build $Installer --notes $Notes --out $manifest --base-url $publicBase
 if ($LASTEXITCODE -ne 0) { throw 'Generation du flux latest.json echouee.' }
 
+# Le flux est signe avant tout envoi : sans cle, rien n'est publie (une mise a jour non signee serait refusee par l'updater).
+$feedSig = "$manifest.sig"
+if ($DryRun -and -not $env:LASTSTREAM_UPDATE_SIGNING_KEY) {
+    Write-Host "(DryRun) LASTSTREAM_UPDATE_SIGNING_KEY absente : flux non signe, rien n'est envoye."
+} else {
+    if (-not $env:LASTSTREAM_UPDATE_SIGNING_KEY) { throw 'LASTSTREAM_UPDATE_SIGNING_KEY absente : impossible de signer latest.json.' }
+    # Une signature restee d'une publication precedente de la meme version ne doit jamais etre envoyee.
+    Remove-Item $feedSig -ErrorAction SilentlyContinue
+    node (Join-Path $PSScriptRoot 'scripts/sign-update.mjs') $manifest
+    if ($LASTEXITCODE -ne 0) { throw 'Signature de latest.json echouee.' }
+    if (-not (Test-Path $feedSig)) { throw "Signature de latest.json absente apres signature : $feedSig" }
+}
+
 $put = @('--yes', 'wrangler@4', 'r2', 'object', 'put')
 $putInstaller = $put + @("$bucket/windows/$name", '--file', $Installer, '--content-type', 'application/vnd.microsoft.portable-executable', '--remote')
 $putFeed = $put + @("$bucket/windows/latest.json", '--file', $manifest, '--content-type', 'application/json', '--cache-control', 'public, max-age=300', '--remote')
+$putFeedSig = $put + @("$bucket/windows/latest.json.sig", '--file', $feedSig, '--content-type', 'text/plain', '--cache-control', 'public, max-age=300', '--remote')
 if ($DryRun) {
     Write-Host "npx $($putInstaller -join ' ')"
+    Write-Host "npx $($putFeedSig -join ' ')"
     Write-Host "npx $($putFeed -join ' ')"
     Get-Content $manifest
     exit 0
@@ -54,7 +70,10 @@ if ($DryRun) {
 
 npx @putInstaller
 if ($LASTEXITCODE -ne 0) { throw "wrangler a echoue sur l'installeur (code $LASTEXITCODE)" }
+# La signature d'abord : latest.json n'apparait qu'une fois sa signature en place (sinon les clients refuseraient la mise a jour).
+npx @putFeedSig
+if ($LASTEXITCODE -ne 0) { throw "wrangler a echoue sur latest.json.sig (code $LASTEXITCODE)" }
 npx @putFeed
 if ($LASTEXITCODE -ne 0) { throw "wrangler a echoue sur latest.json (code $LASTEXITCODE)" }
 Write-Host "Publie : $publicBase/$name"
-Write-Host "Flux   : $publicBase/latest.json"
+Write-Host "Flux   : $publicBase/latest.json (+ latest.json.sig)"

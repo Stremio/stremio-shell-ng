@@ -39,7 +39,7 @@ struct Opt {
     webui_url: Option<String>,
     #[clap(
         long,
-        help = "Check this endpoint for updates instead of the default Laststream feed"
+        help = "Check this endpoint for updates instead of the default Laststream feed (https only, allowed hosts only, signed feed required)"
     )]
     autoupdater_endpoint: Option<Url>,
     #[clap(

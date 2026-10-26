@@ -51,6 +51,7 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1.19", features = ["v4"]}
 dirs = "6"
 winreg = "0.52"
+ed25519-dalek = "2"
 
 [build-dependencies]
 winres = "0.1"

@@ -1,15 +1,20 @@
 use std::{
     io::{Read, Write},
     path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context};
+use base64::Engine;
+use ed25519_dalek::{Signature, VerifyingKey};
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use super::constants::DEFAULT_AUTOUPDATER_ENDPOINT;
+use super::constants::{
+    AUTOUPDATER_ALLOWED_HOSTS, AUTOUPDATER_PUBLIC_KEY_HEX, DEFAULT_AUTOUPDATER_ENDPOINT,
+};
 
 /// Endpoint the updater polls: the explicit one if given, else the default Laststream feed,
 /// and `None` (no thread, no network call) when the updater is disabled.
@@ -25,6 +30,17 @@ pub fn resolve_endpoint(explicit: Option<Url>, disabled: bool) -> Option<Url> {
 /// File name of the downloaded installer, fixed so a stale one is overwritten, never accumulated.
 const INSTALLER_FILE_NAME: &str = "Laststream-update.exe";
 
+/// Time allowed to open a connection, for every request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Time allowed for a whole feed / descriptor / signature request (they are a few KiB).
+const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time allowed for the whole installer download (a stalled read ends the request at this deadline).
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// A feed, descriptor or signature larger than this is refused.
+const METADATA_MAX_BYTES: u64 = 1024 * 1024;
+/// Redirect hops followed at most; each one is checked like the original URL.
+const MAX_REDIRECTS: usize = 3;
+
 /// Only `https` is accepted: the SHA-256 comes from the descriptor, so a plain-http descriptor
 /// would let a network attacker serve both the installer and its hash. Tests may use 127.0.0.1.
 fn require_https(url: &Url, what: &str) -> Result<(), anyhow::Error> {
@@ -38,21 +54,111 @@ fn require_https(url: &Url, what: &str) -> Result<(), anyhow::Error> {
     Err(anyhow!("Refusing non-HTTPS {what} URL: {url}"))
 }
 
-/// Client whose redirects are followed only while every hop stays HTTPS (5 hops at most),
-/// so an https URL cannot be downgraded to http by a redirect.
-fn https_only_client() -> Result<reqwest::blocking::Client, anyhow::Error> {
-    let policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
+/// A URL the updater may fetch: HTTPS and a host from the allow-list (exact, case-insensitive).
+fn check_url(url: &Url, what: &str, allowed_hosts: &[String]) -> Result<(), anyhow::Error> {
+    require_https(url, what)?;
+    let host = url.host_str().unwrap_or_default();
+    if allowed_hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "Refusing {what} URL on a host that is not allowed: {url}"
+    ))
+}
+
+/// Client whose redirects (3 at most) are followed only while every hop passes `check_url`,
+/// so a redirect can neither downgrade to http nor leave the allowed hosts. Connect timeout set;
+/// each request sets its own total timeout.
+fn updater_client(allowed_hosts: &[String]) -> Result<reqwest::blocking::Client, anyhow::Error> {
+    let allowed_hosts = allowed_hosts.to_vec();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
             return attempt.error("Too many redirects");
         }
-        match require_https(attempt.url(), "redirect") {
+        match check_url(attempt.url(), "redirect", &allowed_hosts) {
             Ok(()) => attempt.follow(),
             Err(error) => attempt.error(error.to_string()),
         }
     });
     Ok(reqwest::blocking::Client::builder()
         .redirect(policy)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(None)
         .build()?)
+}
+
+/// Parses the embedded (or injected) ed25519 public key: 32 bytes as 64 hex characters.
+fn parse_public_key(hex: &str) -> Result<VerifyingKey, anyhow::Error> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return Err(anyhow!("Malformed update public key"));
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| anyhow!("Malformed update public key"))?;
+    }
+    VerifyingKey::from_bytes(&bytes).map_err(|_| anyhow!("Malformed update public key"))
+}
+
+/// `<url>.sig`: same host and path with `.sig` appended (query and fragment dropped).
+fn signature_url(url: &Url) -> Url {
+    let mut sig = url.clone();
+    sig.set_query(None);
+    sig.set_fragment(None);
+    sig.set_path(&format!("{}.sig", url.path()));
+    sig
+}
+
+fn fetch_limited(
+    client: &reqwest::blocking::Client,
+    url: &Url,
+    what: &str,
+) -> Result<Vec<u8>, anyhow::Error> {
+    let response = client
+        .get(url.clone())
+        .timeout(METADATA_TIMEOUT)
+        .send()
+        .with_context(|| format!("Could not fetch the {what}"))?
+        .error_for_status()
+        .with_context(|| format!("Could not fetch the {what}"))?;
+    let mut body = Vec::new();
+    response
+        .take(METADATA_MAX_BYTES + 1)
+        .read_to_end(&mut body)
+        .with_context(|| format!("Could not read the {what}"))?;
+    if body.len() as u64 > METADATA_MAX_BYTES {
+        return Err(anyhow!("The {what} is too large"));
+    }
+    Ok(body)
+}
+
+/// Fetches `url` and its detached `.sig`, and returns the exact bytes only if the signature
+/// (base64 ed25519 over those bytes) is valid for `key`. Nothing is parsed before this succeeds.
+fn fetch_signed(
+    client: &reqwest::blocking::Client,
+    url: &Url,
+    what: &str,
+    allowed_hosts: &[String],
+    key: &VerifyingKey,
+) -> Result<Vec<u8>, anyhow::Error> {
+    check_url(url, what, allowed_hosts)?;
+    let sig_url = signature_url(url);
+    check_url(&sig_url, "signature", allowed_hosts)?;
+    let body = fetch_limited(client, url, what)?;
+    let sig_text = fetch_limited(client, &sig_url, "signature")?;
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(
+            String::from_utf8_lossy(&sig_text)
+                .split_whitespace()
+                .collect::<String>(),
+        )
+        .map_err(|_| anyhow!("The {what} signature is not valid base64"))?;
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|_| anyhow!("The {what} signature has the wrong length"))?;
+    key.verify_strict(&body, &signature)
+        .map_err(|_| anyhow!("The {what} signature is invalid: update refused"))?;
+    Ok(body)
 }
 
 fn file_sha256(path: &std::path::Path) -> std::io::Result<String> {
@@ -129,6 +235,11 @@ pub struct Updater {
     pub settle_delay: std::time::Duration,
     /// Version whose verified installer is already waiting to be run: not downloaded again.
     pub ready_version: Option<Version>,
+    /// ed25519 public key (hex) the feed and descriptor signatures are checked with.
+    /// The real key by default; only tests replace it.
+    pub public_key_hex: String,
+    /// Hosts the feed, descriptor, installer and redirects may point to.
+    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,27 +275,60 @@ impl Updater {
             download_dir: std::env::temp_dir().join("laststream-update"),
             settle_delay: std::time::Duration::from_secs(2),
             ready_version: None,
+            public_key_hex: AUTOUPDATER_PUBLIC_KEY_HEX.to_string(),
+            allowed_hosts: AUTOUPDATER_ALLOWED_HOSTS
+                .iter()
+                .map(|host| host.to_string())
+                .collect(),
         }
     }
 
-    /// Fetches the latest update from the update server.
+    /// Fetches the latest update from the update server. The feed and the descriptor are only
+    /// trusted (parsed) once their ed25519 signature checks out, so the installer SHA-256 they
+    /// carry is authenticated. Any failure leaves no installer and no `.part` behind.
     pub fn autoupdate(&self) -> Result<Option<Update>, anyhow::Error> {
         // Check for updates
         println!("Fetching updates for v{}", self.current_version);
         println!("Using updater endpoint {}", self.endpoint);
-        require_https(&self.endpoint, "updater endpoint")?;
-        let client = https_only_client()?;
-        let update_response = client
-            .get(self.endpoint.clone())
-            .send()?
-            .error_for_status()?
-            .json::<UpdateResponse>()?;
-        require_https(&update_response.version_desc, "update descriptor")?;
-        let update_descriptor = client
-            .get(update_response.version_desc)
-            .send()?
-            .error_for_status()?
-            .json::<Descriptor>()?;
+        let result = self.check_signed_update();
+        if let Err(error) = &result {
+            eprintln!("Updater: update refused or failed: {error:#}");
+        }
+        result
+    }
+
+    fn check_signed_update(&self) -> Result<Option<Update>, anyhow::Error> {
+        let key = parse_public_key(&self.public_key_hex)?;
+        check_url(&self.endpoint, "updater endpoint", &self.allowed_hosts)?;
+        let client = updater_client(&self.allowed_hosts)?;
+        let feed_bytes = fetch_signed(
+            &client,
+            &self.endpoint,
+            "update feed",
+            &self.allowed_hosts,
+            &key,
+        )?;
+        let update_response: UpdateResponse =
+            serde_json::from_slice(&feed_bytes).context("Invalid update feed")?;
+        check_url(
+            &update_response.version_desc,
+            "update descriptor",
+            &self.allowed_hosts,
+        )?;
+        // The feed and the descriptor are usually the same signed file: not fetched twice.
+        let descriptor_bytes = if update_response.version_desc == self.endpoint {
+            feed_bytes
+        } else {
+            fetch_signed(
+                &client,
+                &update_response.version_desc,
+                "update descriptor",
+                &self.allowed_hosts,
+                &key,
+            )?
+        };
+        let update_descriptor: Descriptor =
+            serde_json::from_slice(&descriptor_bytes).context("Invalid update descriptor")?;
 
         if update_response.version != update_descriptor.version {
             return Err(anyhow!("Mismatched update versions"));
@@ -203,10 +347,10 @@ impl Updater {
         }
         println!("Found update v{version}");
 
-        require_https(&installer.url, "installer")?;
+        check_url(&installer.url, "installer", &self.allowed_hosts)?;
         std::fs::create_dir_all(&self.download_dir)?;
         let dest = self.download_dir.join(INSTALLER_FILE_NAME);
-        // An installer already on disk is reused only if its hash still matches the descriptor.
+        // An installer already on disk is reused only if its hash still matches the signed descriptor.
         if dest.is_file()
             && file_sha256(&dest)
                 .map(|hash| hash.eq_ignore_ascii_case(installer.checksum.trim()))
@@ -227,72 +371,74 @@ impl Updater {
         let partial = dest.with_extension("exe.part");
 
         std::thread::sleep(self.settle_delay);
-        // Download the new setup file
-        let mut installer_response = client
-            .get(installer.url.clone())
-            .send()?
-            .error_for_status()?;
-        let size = installer_response.content_length();
-        let mut downloaded: u64 = 0;
-        let mut sha256 = Sha256::new();
-
-        println!("Downloading {} to {}", installer.url, partial.display());
-
-        let mut chunk = [0u8; 8192];
-        let mut file = std::fs::File::create(&partial)?;
-        loop {
-            let chunk_size = match installer_response.read(&mut chunk) {
-                Ok(size) => size,
-                Err(error) => {
-                    drop(file);
-                    std::fs::remove_file(&partial).ok();
-                    return Err(error.into());
+        if let Err(error) = download_verified(&client, installer, &partial, &dest) {
+            if let Err(remove_error) = std::fs::remove_file(&partial) {
+                if remove_error.kind() != std::io::ErrorKind::NotFound {
+                    println!("Could not remove {}: {remove_error}", partial.display());
                 }
-            };
-            if chunk_size == 0 {
-                break;
             }
-            sha256.update(&chunk[..chunk_size]);
-            if let Err(error) = file.write_all(&chunk[..chunk_size]) {
-                drop(file);
-                std::fs::remove_file(&partial).ok();
-                return Err(error.into());
-            }
-            if let Some(size) = size {
-                downloaded += chunk_size as u64;
-                print!("\rProgress: {}%", downloaded * 100 / size);
-            } else {
-                print!(".");
-            }
-            std::io::stdout().flush().ok();
-        }
-        println!();
-        let actual_sha256 = format!("{:x}", sha256.finalize());
-        drop(file);
-        if !actual_sha256.eq_ignore_ascii_case(installer.checksum.trim()) {
-            if let Err(error) = std::fs::remove_file(&partial) {
-                println!("Could not remove {}: {error}", partial.display());
-            }
-            return Err(anyhow::anyhow!("Checksum verification failed"));
-        }
-        if let Err(error) = std::fs::rename(&partial, &dest) {
-            std::fs::remove_file(&partial).ok();
-            return Err(error.into());
+            return Err(error);
         }
         println!("Checksum verified.");
 
-        let update = Some(Update {
+        Ok(Some(Update {
             version,
             file: dest,
             sha256: installer.checksum.trim().to_string(),
-        });
-        Ok(update)
+        }))
     }
+}
+
+/// Downloads the installer to `partial`, checks its SHA-256 against the (signed) descriptor and
+/// renames it to `dest`. On `Err` the caller deletes `partial`.
+fn download_verified(
+    client: &reqwest::blocking::Client,
+    installer: &FileItem,
+    partial: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<(), anyhow::Error> {
+    let mut installer_response = client
+        .get(installer.url.clone())
+        .timeout(INSTALLER_TIMEOUT)
+        .send()?
+        .error_for_status()?;
+    let size = installer_response.content_length();
+    let mut downloaded: u64 = 0;
+    let mut sha256 = Sha256::new();
+
+    println!("Downloading {} to {}", installer.url, partial.display());
+
+    let mut chunk = [0u8; 8192];
+    let mut file = std::fs::File::create(partial)?;
+    loop {
+        let chunk_size = installer_response.read(&mut chunk)?;
+        if chunk_size == 0 {
+            break;
+        }
+        sha256.update(&chunk[..chunk_size]);
+        file.write_all(&chunk[..chunk_size])?;
+        if let Some(size) = size.filter(|size| *size > 0) {
+            downloaded += chunk_size as u64;
+            print!("\rProgress: {}%", downloaded * 100 / size);
+        } else {
+            print!(".");
+        }
+        std::io::stdout().flush().ok();
+    }
+    println!();
+    let actual_sha256 = format!("{:x}", sha256.finalize());
+    drop(file);
+    if !actual_sha256.eq_ignore_ascii_case(installer.checksum.trim()) {
+        return Err(anyhow!("Checksum verification failed"));
+    }
+    std::fs::rename(partial, dest)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use std::{
         io::{BufRead, BufReader},
         net::TcpListener,
@@ -300,7 +446,6 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
-        time::Duration,
     };
 
     const INSTALLER: &[u8] = b"fake installer bytes";
@@ -309,14 +454,118 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    /// Serves `latest.json` (feed and descriptor at once, like `upload.ps1` publishes it)
-    /// and the installer on 127.0.0.1; counts the requests received.
-    fn serve(feed_version: &str, checksum: &str) -> (Url, Arc<AtomicUsize>) {
+    /// Key pair generated on the fly (random seed from the OS), never stored anywhere.
+    fn new_signing_key() -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        seed[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        SigningKey::from_bytes(&seed)
+    }
+
+    fn public_hex(key: &SigningKey) -> String {
+        key.verifying_key()
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Sig {
+        /// `.sig` made by the trusted key over the exact served bytes.
+        Valid,
+        /// No `.sig` published (404).
+        Missing,
+        /// `.sig` made by another key.
+        OtherKey,
+        /// `.sig` valid for the original file, but the served file has one more byte.
+        Tampered,
+        /// `.sig` that is not base64.
+        NotBase64,
+        /// `.sig` that is base64 but not 64 bytes.
+        WrongLength,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Body {
+        Normal,
+        /// Announces more bytes than it sends, then closes the connection.
+        Truncated,
+    }
+
+    struct Setup {
+        feed_version: &'static str,
+        checksum: String,
+        sig: Sig,
+        body: Body,
+        /// Descriptor is a different file (`/desc.json`, with its own `.sig`) than the feed.
+        separate_descriptor: bool,
+        /// Installer URL base written in the signed feed (default: the local server).
+        installer_base: Option<&'static str>,
+    }
+
+    impl Setup {
+        fn new(feed_version: &'static str, checksum: &str) -> Self {
+            Setup {
+                feed_version,
+                checksum: checksum.to_string(),
+                sig: Sig::Valid,
+                body: Body::Normal,
+                separate_descriptor: false,
+                installer_base: None,
+            }
+        }
+    }
+
+    struct Served {
+        endpoint: Url,
+        hits: Arc<AtomicUsize>,
+        public_key_hex: String,
+    }
+
+    fn serve(feed_version: &'static str, checksum: &str) -> Served {
+        serve_with(Setup::new(feed_version, checksum))
+    }
+
+    /// Serves `latest.json` (feed and descriptor at once, like `upload.ps1` publishes it),
+    /// its `.sig` and the installer on 127.0.0.1; counts the requests received.
+    fn serve_with(setup: Setup) -> Served {
+        let trusted = new_signing_key();
+        let other = new_signing_key();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let feed = format!(
-            r#"{{"version":"{feed_version}","versionDesc":"{base}/latest.json","files":[{{"name":"Laststream.exe","url":"{base}/Laststream.exe","checksum":"{checksum}","os":"windows"}}]}}"#
+        let installer_base = setup.installer_base.map_or(base.clone(), str::to_string);
+        let desc_path = if setup.separate_descriptor {
+            "desc.json"
+        } else {
+            "latest.json"
+        };
+        let files = format!(
+            r#""files":[{{"name":"Laststream.exe","url":"{installer_base}/Laststream.exe","checksum":"{}","os":"windows"}}]"#,
+            setup.checksum
         );
+        let feed = format!(
+            r#"{{"version":"{}","versionDesc":"{base}/{desc_path}",{files}}}"#,
+            setup.feed_version
+        )
+        .into_bytes();
+        let descriptor = format!(r#"{{"version":"{}",{files}}}"#, setup.feed_version).into_bytes();
+        let signer = if setup.sig == Sig::OtherKey {
+            other
+        } else {
+            trusted.clone()
+        };
+        let sign = |data: &[u8]| {
+            base64::engine::general_purpose::STANDARD
+                .encode(signer.sign(data).to_bytes())
+                .into_bytes()
+        };
+        let (feed_sig, descriptor_sig) = (sign(&feed), sign(&descriptor));
+        let mut served_feed = feed.clone();
+        if setup.sig == Sig::Tampered {
+            served_feed.push(b' ');
+        }
+        let (sig_mode, body_mode) = (setup.sig, setup.body);
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_server = hits.clone();
         std::thread::spawn(move || {
@@ -333,8 +582,35 @@ mod tests {
                         .ok();
                     continue;
                 }
-                let (status, content_type, body) = if request_line.contains("/latest.json") {
-                    ("200 OK", "application/json", feed.clone().into_bytes())
+                if request_line.contains("/redirect-https.json") {
+                    stream
+                        .write_all(b"HTTP/1.1 302 Found\r\nLocation: https://evil.invalid/latest.json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .ok();
+                    continue;
+                }
+                if request_line.contains("/Laststream.exe") && body_mode == Body::Truncated {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n0123456789")
+                        .ok();
+                    continue;
+                }
+                let (status, content_type, body) = if request_line.contains("/latest.json.sig") {
+                    match sig_mode {
+                        Sig::Missing => ("404 Not Found", "text/plain", Vec::new()),
+                        Sig::NotBase64 => ("200 OK", "text/plain", b"!!!not base64!!!".to_vec()),
+                        Sig::WrongLength => ("200 OK", "text/plain", b"AAAA".to_vec()),
+                        _ => ("200 OK", "text/plain", feed_sig.clone()),
+                    }
+                } else if request_line.contains("/desc.json.sig") {
+                    if sig_mode == Sig::Missing {
+                        ("404 Not Found", "text/plain", Vec::new())
+                    } else {
+                        ("200 OK", "text/plain", descriptor_sig.clone())
+                    }
+                } else if request_line.contains("/latest.json") {
+                    ("200 OK", "application/json", served_feed.clone())
+                } else if request_line.contains("/desc.json") {
+                    ("200 OK", "application/json", descriptor.clone())
                 } else if request_line.contains("/Laststream.exe") {
                     ("200 OK", "application/octet-stream", INSTALLER.to_vec())
                 } else {
@@ -348,16 +624,39 @@ mod tests {
                 stream.write_all(&body).ok();
             }
         });
-        (Url::parse(&format!("{base}/latest.json")).unwrap(), hits)
+        Served {
+            endpoint: Url::parse(&format!("{base}/latest.json")).unwrap(),
+            hits,
+            public_key_hex: public_hex(&trusted),
+        }
     }
 
-    fn updater_for(endpoint: &Url, current: &str, name: &str) -> (Updater, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("laststream-updater-test-{name}"));
+    /// Test folders live under the worktree (`target/test-tmp`), not in the system temp folder.
+    fn updater_for(served: &Served, current: &str, name: &str) -> (Updater, PathBuf) {
+        updater_at(&served.endpoint, &served.public_key_hex, current, name)
+    }
+
+    fn updater_at(endpoint: &Url, key_hex: &str, current: &str, name: &str) -> (Updater, PathBuf) {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-tmp")
+            .join(format!("laststream-updater-test-{name}"));
+        std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         let mut updater = Updater::new(current.parse().unwrap(), endpoint, false);
         updater.download_dir = dir.clone();
         updater.settle_delay = Duration::ZERO;
+        updater.public_key_hex = key_hex.to_string();
+        updater.allowed_hosts = vec!["127.0.0.1".to_string()];
         (updater, dir)
+    }
+
+    fn assert_nothing_left(dir: &std::path::Path) {
+        assert!(!dir.join(INSTALLER_FILE_NAME).exists(), "no installer");
+        assert!(
+            !dir.join("Laststream-update.exe.part").exists(),
+            "no .part file"
+        );
     }
 
     #[test]
@@ -381,44 +680,111 @@ mod tests {
     }
 
     #[test]
+    fn real_public_key_and_host_are_the_defaults() {
+        let endpoint = Url::parse(DEFAULT_AUTOUPDATER_ENDPOINT).unwrap();
+        let updater = Updater::new(Version::new(1, 0, 0), &endpoint, false);
+        assert_eq!(updater.public_key_hex, AUTOUPDATER_PUBLIC_KEY_HEX);
+        assert!(parse_public_key(&updater.public_key_hex).is_ok());
+        assert_eq!(
+            updater.allowed_hosts,
+            vec!["laststream.gtux-prog.workers.dev"]
+        );
+        assert!(check_url(&endpoint, "t", &updater.allowed_hosts).is_ok());
+    }
+
+    #[test]
     fn newer_version_is_downloaded_and_checksum_verified() {
-        let (endpoint, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "ok");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "ok");
         let update = updater.autoupdate().unwrap().expect("update expected");
         assert_eq!(update.version, Version::new(1, 0, 18));
         assert_eq!(std::fs::read(&update.file).unwrap(), INSTALLER);
         assert_eq!(update.file, dir.join(INSTALLER_FILE_NAME));
         assert_eq!(
-            hits.load(Ordering::SeqCst),
+            served.hits.load(Ordering::SeqCst),
             3,
-            "feed, descriptor, installer"
+            "feed, its signature, installer"
         );
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
+    fn separate_signed_descriptor_is_fetched_and_verified() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.separate_descriptor = true;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "separate");
+        assert!(updater.autoupdate().unwrap().is_some());
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            5,
+            "feed, sig, descriptor, sig, installer"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn separate_descriptor_without_signature_is_refused() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.separate_descriptor = true;
+        setup.sig = Sig::Missing;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "separate-nosig");
+        assert!(updater.autoupdate().is_err());
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn uppercase_checksum_in_the_feed_is_accepted() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER).to_uppercase());
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "upper");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER).to_uppercase());
+        let (updater, dir) = updater_for(&served, "1.0.17", "upper");
         assert!(updater.autoupdate().unwrap().is_some());
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn checksum_mismatch_rejects_and_deletes_the_installer() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(b"something else"));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "bad");
+        let served = serve("1.0.18", &sha256_hex(b"something else"));
+        let (updater, dir) = updater_for(&served, "1.0.17", "bad");
         let error = updater.autoupdate().unwrap_err();
         assert!(error.to_string().contains("Checksum"), "{}", error);
-        assert!(!dir.join(INSTALLER_FILE_NAME).exists());
-        assert!(!dir.join("Laststream-update.exe.part").exists());
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn wrong_sha_installer_is_never_run() {
+        let served = serve("1.0.18", &sha256_hex(b"something else"));
+        let (updater, dir) = updater_for(&served, "1.0.17", "never-run");
+        let slot = std::sync::Mutex::new(None);
+        match updater.autoupdate() {
+            Ok(update) => *slot.lock().unwrap() = update,
+            Err(error) => assert!(error.to_string().contains("Checksum"), "{}", error),
+        }
+        assert!(slot.lock().unwrap().is_none(), "no Update was produced");
+        assert_eq!(verified_installer_to_run(&slot), None);
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn interrupted_download_removes_the_part_file() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.body = Body::Truncated;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "truncated");
+        // A stale .part from an earlier crash must not survive either.
+        std::fs::write(dir.join("Laststream-update.exe.part"), b"stale").unwrap();
+        assert!(updater.autoupdate().is_err());
+        assert_nothing_left(&dir);
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn failed_check_keeps_the_installer_already_waiting() {
-        let (endpoint, _) = serve("1.0.19", &sha256_hex(b"something else"));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "keep");
+        let served = serve("1.0.19", &sha256_hex(b"something else"));
+        let (updater, dir) = updater_for(&served, "1.0.17", "keep");
         std::fs::write(dir.join(INSTALLER_FILE_NAME), b"verified earlier").unwrap();
         assert!(updater.autoupdate().is_err());
         assert_eq!(
@@ -431,22 +797,30 @@ mod tests {
 
     #[test]
     fn version_already_downloaded_is_not_fetched_again() {
-        let (endpoint, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (mut updater, dir) = updater_for(&endpoint, "1.0.17", "ready");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (mut updater, dir) = updater_for(&served, "1.0.17", "ready");
         std::fs::write(dir.join(INSTALLER_FILE_NAME), INSTALLER).unwrap();
         updater.ready_version = Some(Version::new(1, 0, 18));
         assert!(updater.autoupdate().unwrap().is_none());
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "installer not requested");
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            2,
+            "installer not requested"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn same_or_older_version_is_not_downloaded() {
         for (published, name) in [("1.0.17", "same"), ("1.0.16", "older")] {
-            let (endpoint, hits) = serve(published, &sha256_hex(INSTALLER));
-            let (updater, dir) = updater_for(&endpoint, "1.0.17", name);
+            let served = serve(published, &sha256_hex(INSTALLER));
+            let (updater, dir) = updater_for(&served, "1.0.17", name);
             assert!(updater.autoupdate().is_err());
-            assert_eq!(hits.load(Ordering::SeqCst), 2, "installer not requested");
+            assert_eq!(
+                served.hits.load(Ordering::SeqCst),
+                2,
+                "installer not requested"
+            );
             assert!(!dir.join(INSTALLER_FILE_NAME).exists());
             std::fs::remove_dir_all(dir).ok();
         }
@@ -474,7 +848,8 @@ mod tests {
     #[test]
     fn non_https_endpoint_is_refused_without_any_request() {
         let endpoint = Url::parse("http://example.invalid/latest.json").unwrap();
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "http-endpoint");
+        let (updater, dir) =
+            updater_at(&endpoint, &public_hex(&new_signing_key()), "1.0.17", "http");
         let error = updater.autoupdate().unwrap_err();
         assert!(error.to_string().contains("non-HTTPS"), "{}", error);
         std::fs::remove_dir_all(dir).ok();
@@ -482,19 +857,23 @@ mod tests {
 
     #[test]
     fn valid_installer_already_on_disk_is_not_downloaded_again() {
-        let (endpoint, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "on-disk");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "on-disk");
         std::fs::write(dir.join(INSTALLER_FILE_NAME), INSTALLER).unwrap();
         let update = updater.autoupdate().unwrap().expect("reused installer");
         assert_eq!(update.file, dir.join(INSTALLER_FILE_NAME));
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "installer not requested");
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            2,
+            "installer not requested"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn corrupt_installer_on_disk_is_downloaded_again() {
-        let (endpoint, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (mut updater, dir) = updater_for(&endpoint, "1.0.17", "corrupt");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (mut updater, dir) = updater_for(&served, "1.0.17", "corrupt");
         std::fs::write(dir.join(INSTALLER_FILE_NAME), b"tampered").unwrap();
         updater.ready_version = Some(Version::new(1, 0, 18));
         assert!(updater.autoupdate().unwrap().is_some());
@@ -502,25 +881,45 @@ mod tests {
             std::fs::read(dir.join(INSTALLER_FILE_NAME)).unwrap(),
             INSTALLER
         );
-        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        assert_eq!(served.hits.load(Ordering::SeqCst), 3);
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn redirect_to_plain_http_is_refused() {
-        let (base, hits) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let endpoint = base.join("/redirect.json").unwrap();
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "redirect");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let endpoint = served.endpoint.join("/redirect.json").unwrap();
+        let (updater, dir) = updater_at(&endpoint, &served.public_key_hex, "1.0.17", "redirect");
         let error = updater.autoupdate().unwrap_err();
         assert!(format!("{:?}", error).contains("non-HTTPS"), "{:?}", error);
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "only the redirect was hit");
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            1,
+            "only the redirect was hit"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn redirect_to_a_host_outside_the_list_is_refused() {
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let endpoint = served.endpoint.join("/redirect-https.json").unwrap();
+        let (updater, dir) =
+            updater_at(&endpoint, &served.public_key_hex, "1.0.17", "redirect-host");
+        let error = updater.autoupdate().unwrap_err();
+        assert!(
+            format!("{:?}", error).contains("not allowed"),
+            "{:?}",
+            error
+        );
+        assert_eq!(served.hits.load(Ordering::SeqCst), 1);
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn installer_replaced_after_download_is_refused_and_deleted() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "toctou");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "toctou");
         let update = updater.autoupdate().unwrap().expect("update expected");
         assert_eq!(update.verify_before_run().unwrap(), update.file.as_path());
         std::fs::write(&update.file, b"malicious replacement").unwrap();
@@ -532,8 +931,8 @@ mod tests {
 
     #[test]
     fn installer_removed_after_download_is_refused() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "toctou-gone");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "toctou-gone");
         let update = updater.autoupdate().unwrap().expect("update expected");
         std::fs::remove_file(&update.file).unwrap();
         assert!(update.verify_before_run().is_err());
@@ -542,8 +941,8 @@ mod tests {
 
     #[test]
     fn refusal_empties_the_slot_and_returns_none() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "slot");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "slot");
         let update = updater.autoupdate().unwrap().expect("update expected");
         let slot = std::sync::Mutex::new(Some(update.clone()));
         assert_eq!(verified_installer_to_run(&slot), Some(update.file.clone()));
@@ -557,8 +956,8 @@ mod tests {
 
     #[test]
     fn directory_in_place_of_the_installer_is_refused() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER));
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "dir-swap");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (updater, dir) = updater_for(&served, "1.0.17", "dir-swap");
         let update = updater.autoupdate().unwrap().expect("update expected");
         std::fs::remove_file(&update.file).unwrap();
         std::fs::create_dir(&update.file).unwrap();
@@ -568,8 +967,8 @@ mod tests {
 
     #[test]
     fn uppercase_descriptor_checksum_still_verifies_before_run() {
-        let (endpoint, _) = serve("1.0.18", &sha256_hex(INSTALLER).to_uppercase());
-        let (updater, dir) = updater_for(&endpoint, "1.0.17", "upper-run");
+        let served = serve("1.0.18", &sha256_hex(INSTALLER).to_uppercase());
+        let (updater, dir) = updater_for(&served, "1.0.17", "upper-run");
         let update = updater.autoupdate().unwrap().expect("update expected");
         assert!(update.verify_before_run().is_ok());
         std::fs::remove_dir_all(dir).ok();
@@ -577,10 +976,148 @@ mod tests {
 
     #[test]
     fn force_update_reinstalls_the_current_version() {
-        let (endpoint, _) = serve("1.0.17", &sha256_hex(INSTALLER));
-        let (mut updater, dir) = updater_for(&endpoint, "1.0.17", "force");
+        let served = serve("1.0.17", &sha256_hex(INSTALLER));
+        let (mut updater, dir) = updater_for(&served, "1.0.17", "force");
         updater.force_update = true;
         assert!(updater.autoupdate().unwrap().is_some());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // --- LAST-88: signature, host list ---
+
+    #[test]
+    fn descriptor_modified_by_one_byte_is_refused() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.sig = Sig::Tampered;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "tampered");
+        let error = updater.autoupdate().unwrap_err();
+        assert!(
+            error.to_string().contains("signature is invalid"),
+            "{}",
+            error
+        );
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            2,
+            "installer not requested"
+        );
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn signature_by_another_key_is_refused() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.sig = Sig::OtherKey;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "other-key");
+        let error = updater.autoupdate().unwrap_err();
+        assert!(
+            error.to_string().contains("signature is invalid"),
+            "{}",
+            error
+        );
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn missing_signature_file_is_refused() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.sig = Sig::Missing;
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "no-sig");
+        let error = updater.autoupdate().unwrap_err();
+        assert!(format!("{:#}", error).contains("signature"), "{:#}", error);
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            2,
+            "installer not requested"
+        );
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn malformed_public_key_refuses_any_update_without_a_request() {
+        for bad in ["", "zz", &"g".repeat(64), &"00".repeat(31)] {
+            let served = serve("1.0.18", &sha256_hex(INSTALLER));
+            let (updater, dir) = updater_at(&served.endpoint, bad, "1.0.17", "bad-key");
+            let error = updater.autoupdate().unwrap_err();
+            assert!(error.to_string().contains("public key"), "{}", error);
+            assert_eq!(served.hits.load(Ordering::SeqCst), 0);
+            assert_nothing_left(&dir);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn garbage_signature_is_refused() {
+        for sig in [Sig::NotBase64, Sig::WrongLength] {
+            let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+            setup.sig = sig;
+            let served = serve_with(setup);
+            let (updater, dir) = updater_for(&served, "1.0.17", "garbage-sig");
+            let error = updater.autoupdate().unwrap_err();
+            assert!(format!("{:#}", error).contains("signature"), "{:#}", error);
+            assert_eq!(served.hits.load(Ordering::SeqCst), 2);
+            assert_nothing_left(&dir);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn host_outside_the_list_is_refused_without_any_request() {
+        let served = serve("1.0.18", &sha256_hex(INSTALLER));
+        let (mut updater, dir) = updater_for(&served, "1.0.17", "host");
+        updater.allowed_hosts = vec!["laststream.gtux-prog.workers.dev".to_string()];
+        let error = updater.autoupdate().unwrap_err();
+        assert!(error.to_string().contains("not allowed"), "{}", error);
+        assert_eq!(served.hits.load(Ordering::SeqCst), 0);
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn installer_on_a_host_outside_the_list_is_refused() {
+        let mut setup = Setup::new("1.0.18", &sha256_hex(INSTALLER));
+        setup.installer_base = Some("https://evil.invalid");
+        let served = serve_with(setup);
+        let (updater, dir) = updater_for(&served, "1.0.17", "installer-host");
+        let error = updater.autoupdate().unwrap_err();
+        assert!(error.to_string().contains("not allowed"), "{}", error);
+        assert_eq!(
+            served.hits.load(Ordering::SeqCst),
+            2,
+            "no installer request"
+        );
+        assert_nothing_left(&dir);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn host_check_is_exact_and_case_insensitive() {
+        let allowed = vec!["laststream.gtux-prog.workers.dev".to_string()];
+        let ok = Url::parse("https://LastStream.gtux-prog.workers.dev/x").unwrap();
+        assert!(check_url(&ok, "t", &allowed).is_ok());
+        for bad in [
+            "https://evil.laststream.gtux-prog.workers.dev/x",
+            "https://laststream.gtux-prog.workers.dev.evil.test/x",
+            "https://evil.test/laststream.gtux-prog.workers.dev",
+            "https://laststream.gtux-prog.workers.dev@evil.test/x",
+        ] {
+            let url = Url::parse(bad).unwrap();
+            assert!(check_url(&url, "t", &allowed).is_err(), "{}", bad);
+        }
+    }
+
+    #[test]
+    fn signature_url_appends_sig_to_the_path() {
+        let url = Url::parse("https://h.test/app/windows/latest.json?x=1#f").unwrap();
+        assert_eq!(
+            signature_url(&url).as_str(),
+            "https://h.test/app/windows/latest.json.sig"
+        );
     }
 }
