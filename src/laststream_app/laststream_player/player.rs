@@ -408,6 +408,15 @@ struct DisplayOutputState {
 #[derive(Default)]
 pub struct Player {
     pub channel: ipc::Channel,
+    /// Reçoit un signal quand le budget de relance de mpv est épuisé (le shell l'annonce à l'utilisateur).
+    pub lost: Option<Receiver<()>>,
+}
+
+/// Pourquoi mpv ne repart pas : budget épuisé (le lecteur est perdu) ou fermeture de l'app (rien à signaler).
+#[derive(Debug, PartialEq, Eq)]
+enum RestartStop {
+    BudgetSpent,
+    Shutdown,
 }
 
 /// Au plus `MAX_RESTARTS` relances de mpv sur `RESTART_WINDOW`, attente de 250 ms, 500 ms, 1 s.
@@ -519,6 +528,8 @@ struct PlayerContext {
     resume: Arc<Mutex<ResumeState>>,
     /// Les fils d'une instance y signalent un arrêt inattendu de mpv.
     died: Sender<String>,
+    /// Le superviseur y signale l'épuisement du budget de relance (voir `Player::lost`).
+    lost: Sender<()>,
 }
 
 fn signal_death(ctx: &PlayerContext, stop: &AtomicBool, cause: &str) {
@@ -660,11 +671,14 @@ fn supervise_player(ctx: PlayerContext, first: Generation, died: Receiver<String
             generation.stop();
         }
         while died.try_recv().is_ok() {}
-        current = restart_player(&ctx, &mut policy);
-        if current.is_none() {
-            report_error("lecteur", &"relances épuisées, mpv reste arrêté");
-            notify_player_lost(&ctx);
-            break;
+        match restart_player(&ctx, &mut policy) {
+            Ok(generation) => current = Some(generation),
+            Err(RestartStop::Shutdown) => break,
+            Err(RestartStop::BudgetSpent) => {
+                report_error("lecteur", &"relances épuisées, mpv reste arrêté");
+                notify_player_lost(&ctx);
+                break;
+            }
         }
     }
     if let Some(generation) = current {
@@ -672,24 +686,33 @@ fn supervise_player(ctx: PlayerContext, first: Generation, died: Receiver<String
     }
 }
 
-/// Relance mpv selon le budget ; `None` quand il est épuisé (ou à la fermeture).
-fn restart_player(ctx: &PlayerContext, policy: &mut RestartPolicy) -> Option<Generation> {
+/// Relance mpv selon le budget ; `Err` quand il est épuisé ou à la fermeture de l'app.
+fn restart_player(
+    ctx: &PlayerContext,
+    policy: &mut RestartPolicy,
+) -> Result<Generation, RestartStop> {
     loop {
-        let delay = policy.on_failure(Instant::now())?;
+        if SERVICES.is_shutdown() {
+            return Err(RestartStop::Shutdown);
+        }
+        let Some(delay) = policy.on_failure(Instant::now()) else {
+            return Err(RestartStop::BudgetSpent);
+        };
         if !SERVICES.sleep(delay) {
-            return None;
+            return Err(RestartStop::Shutdown);
         }
         let preamble = lock(&ctx.resume, "reprise du lecteur").replay_messages();
         lock(&ctx.video_ready_state, "état du lecteur").reset_for_restart();
         match Generation::start(ctx, preamble) {
-            Ok(generation) => return Some(generation),
+            Ok(generation) => return Ok(generation),
             Err(error) => report_error("lecteur: relance de mpv échouée", &error),
         }
     }
 }
 
-/// L'interface apprend que la lecture est perdue pour de bon (fin en erreur).
+/// L'interface apprend que la lecture est perdue pour de bon (fin en erreur), et l'utilisateur est prévenu.
 fn notify_player_lost(ctx: &PlayerContext) {
+    let _ = ctx.lost.send(());
     let response = PlayerResponse(
         "mpv-event-ended",
         PlayerEvent::End(PlayerEnded::from_end_reason(mpv_end_file_reason::Error)),
@@ -717,7 +740,9 @@ impl PartialUi for Player {
         let (in_msg_sender, in_msg_receiver) = flume::unbounded();
         let (rpc_response_sender, rpc_response_receiver) = flume::unbounded();
         let (died_sender, died_receiver) = flume::unbounded();
+        let (lost_sender, lost_receiver) = flume::unbounded();
         data.channel = ipc::Channel::new(Some((in_msg_sender, rpc_response_receiver)));
+        data.lost = Some(lost_receiver);
 
         let ctx = PlayerContext {
             window_handle: window_handle as isize,
@@ -727,6 +752,7 @@ impl PartialUi for Player {
             gpu_video_processing: Arc::new(AtomicBool::new(false)),
             resume: Arc::new(Mutex::new(ResumeState::default())),
             died: died_sender,
+            lost: lost_sender,
         };
         let first = Generation::start(&ctx, Vec::new()).map_err(nwg::NwgError::initialization)?;
         SERVICES.spawn("mpv-supervisor", move || {
@@ -1318,12 +1344,40 @@ fn run_message_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{default_buffer_options, ResumeState, VideoReadyState};
+    use super::{
+        default_buffer_options, restart_player, PlayerContext, RestartStop, ResumeState,
+        VideoReadyState,
+    };
     use crate::laststream_app::laststream_player::communication::{BoolProp, FpProp};
     use crate::laststream_app::laststream_player::{
         CmdVal, InMsg, InMsgArgs, InMsgFn, PropKey, PropVal,
     };
-    use std::convert::TryFrom;
+    use crate::laststream_app::robust::RestartPolicy;
+    use std::{
+        convert::TryFrom,
+        sync::{atomic::AtomicBool, Arc, Mutex},
+        time::Duration,
+    };
+
+    #[test]
+    fn spent_restart_budget_reports_a_lost_player_without_starting_mpv() {
+        let ctx = PlayerContext {
+            window_handle: 0,
+            in_msg_receiver: flume::unbounded::<String>().1,
+            rpc_response_sender: flume::unbounded::<String>().0,
+            video_ready_state: Arc::new(Mutex::new(VideoReadyState::default())),
+            gpu_video_processing: Arc::new(AtomicBool::new(false)),
+            resume: Arc::new(Mutex::new(ResumeState::default())),
+            died: flume::unbounded::<String>().0,
+            lost: flume::unbounded::<()>().0,
+        };
+        // Budget nul : aucune relance possible, donc aucune instance de mpv n'est démarrée.
+        let mut policy = RestartPolicy::new(0, Duration::from_secs(60), Duration::from_millis(1));
+        assert!(matches!(
+            restart_player(&ctx, &mut policy),
+            Err(RestartStop::BudgetSpent)
+        ));
+    }
 
     fn set_prop(key: PropKey, value: PropVal) -> InMsg {
         InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(key, value))

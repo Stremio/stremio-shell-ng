@@ -17,6 +17,7 @@ pub use ipc::RPCResponse;
 pub mod named_pipe;
 pub mod open_media;
 pub mod robust;
+pub mod sentry_report;
 pub mod splash;
 pub mod systray;
 pub mod window_helper;

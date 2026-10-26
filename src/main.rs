@@ -64,6 +64,10 @@ fn resolve_webui_url(webui_url: Option<String>, development: bool) -> Option<Str
 }
 
 fn main() {
+    // Dès le début : une panique, même pendant l'initialisation de l'interface, est journalisée (LAST-172).
+    laststream_app::robust::install_panic_hook();
+    // Le guard vide les envois Sentry à la fin de `main` ; sans DSN, `None` et aucun envoi.
+    let _sentry = laststream_app::sentry_report::init();
     nwg::enable_visual_styles();
 
     let opt = Opt::parse();

@@ -146,6 +146,10 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_remote_probe_notice])]
     pub remote_probe_notice: nwg::Notice,
+    /// Budget de relance de mpv épuisé : le lecteur ne reviendra pas (LAST-172).
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_player_lost_notice])]
+    pub player_lost_notice: nwg::Notice,
     /// Result of the last probe of the remote service (`None` while it runs); the error holds the cause.
     pub remote_probe_result: Arc<Mutex<Option<Result<(), String>>>>,
     /// Page of the remote service to load, from `shell.json` (`None`: local service or explicit URL).
@@ -203,7 +207,6 @@ impl MainWindow {
         }
     }
     fn on_init(&self) {
-        robust::install_panic_hook();
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
@@ -251,6 +254,15 @@ impl MainWindow {
         };
         let player_tx = player_tx.clone();
         let player_rx = player_rx.clone();
+        // Le lecteur signale l'épuisement de son budget de relance : l'interface l'annonce (LAST-172).
+        if let Some(lost_receiver) = self.player.lost.clone() {
+            let lost_sender = self.player_lost_notice.sender();
+            SERVICES.spawn("player-lost", move || {
+                while SERVICES.recv(&lost_receiver).is_some() {
+                    lost_sender.notice();
+                }
+            });
+        }
 
         let web_channel = self.webview.channel.borrow();
         let Some((web_tx, web_rx)) = web_channel.as_ref() else {
@@ -919,6 +931,19 @@ impl MainWindow {
                 eprintln!("Cannot save window settings: {err}");
             }
         }
+    }
+    /// Relances de mpv épuisées : une boîte de dialogue native dit à l'utilisateur de redémarrer (LAST-172).
+    fn on_player_lost_notice(&self) {
+        self.on_show();
+        nwg::modal_message(
+            &self.window,
+            &nwg::MessageParams {
+                title: APP_NAME,
+                content: "Le lecteur a rencontré trop d'erreurs. Redémarrez l'app.",
+                buttons: nwg::MessageButtons::Ok,
+                icons: nwg::MessageIcons::Error,
+            },
+        );
     }
     fn on_toggle_fullscreen_notice(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
