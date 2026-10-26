@@ -63,7 +63,7 @@ pub struct RPCResponse {
 }
 
 impl RPCResponse {
-    pub fn get_handshake(streaming_server_url: Option<&str>) -> String {
+    pub fn get_handshake(streaming_server_url: Option<&str>, mpv_config: Option<&str>) -> String {
         let resp = RPCResponse {
             id: 0,
             object: "transport".to_string(),
@@ -107,6 +107,12 @@ impl RPCResponse {
                             "nativeAssSubtitles".to_string(),
                             "".to_string(),
                             "true".to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
+                            "mpvConfig".to_string(),
+                            "".to_string(),
+                            mpv_config.unwrap_or_default().to_string(),
                         ],
                     ],
                     signals: vec![],
@@ -154,11 +160,21 @@ impl RPCResponse {
         request_id: u64,
         result: Result<Option<String>, String>,
     ) -> String {
+        Self::path_selected("cache-directory-selected", request_id, result)
+    }
+    pub fn mpv_config_selected(request_id: u64, result: Result<Option<String>, String>) -> String {
+        Self::path_selected("mpv-config-selected", request_id, result)
+    }
+    fn path_selected(
+        event: &str,
+        request_id: u64,
+        result: Result<Option<String>, String>,
+    ) -> String {
         let (path, error) = match result {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
         };
-        Self::response_message(Some(json!(["cache-directory-selected", {
+        Self::response_message(Some(json!([event, {
             "requestId": request_id,
             "path": path,
             "error": error,

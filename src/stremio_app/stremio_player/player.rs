@@ -1,5 +1,6 @@
 use crate::stremio_app::gpu_video_processing;
 use crate::stremio_app::ipc;
+use crate::stremio_app::mpv_config;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
 use libmpv2::{events::Event, Format, Mpv, SetData};
@@ -455,6 +456,11 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         for (name, value) in options {
             if let Err(error) = initializer.set_property(name, value) {
                 eprintln!("mpv: cannot set {name}={value}: {error:?}");
+            }
+        }
+        if let Some(path) = mpv_config::path() {
+            if let Err(error) = initializer.load_config(&path) {
+                eprintln!("mpv: cannot load {path}: {error:?}");
             }
         }
         Ok(())
