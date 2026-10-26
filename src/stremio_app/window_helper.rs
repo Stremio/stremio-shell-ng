@@ -50,12 +50,15 @@ pub struct WindowStyle {
 impl WindowStyle {
     pub fn get_window_state(self, hwnd: HWND) -> u32 {
         let mut state: WindowState = WindowState::empty();
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         if 0 != unsafe { IsIconic(hwnd) } {
             state |= WindowState::MINIMIZED;
         }
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         if 0 != unsafe { IsZoomed(hwnd) } {
             state |= WindowState::MAXIMIZED;
         }
+        // SAFETY: GetForegroundWindow n'a aucun paramètre ; le handle renvoyé est seulement comparé, jamais déréférencé.
         if hwnd == unsafe { GetForegroundWindow() } {
             state |= WindowState::ACTIVE
         }
@@ -65,9 +68,11 @@ impl WindowStyle {
         state.bits() as u32
     }
     pub fn is_window_minimized(&self, hwnd: HWND) -> bool {
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         0 != unsafe { IsIconic(hwnd) }
     }
     pub fn show_window_at(&self, hwnd: HWND, pos: HWND) {
+        // SAFETY: SetWindowPos agit sur `hwnd` (fenêtre de ce fil) ; `pos` est un handle d'ordre Z valide ou un HWND_* spécial ; aucune mémoire de l'appelant.
         unsafe {
             SetWindowPos(
                 hwnd,
@@ -81,7 +86,9 @@ impl WindowStyle {
         }
     }
     pub fn center_window(&mut self, hwnd: HWND, min_width: i32, min_height: i32) {
+        // SAFETY: GetSystemMetrics n'a aucun pointeur en paramètre.
         let monitor_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        // SAFETY: GetSystemMetrics n'a aucun pointeur en paramètre.
         let monitor_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         let small_side = cmp::min(monitor_w, monitor_h) * 70 / 100;
         self.size = (
@@ -100,11 +107,13 @@ impl WindowStyle {
             placement.rcNormalPosition.right - placement.rcNormalPosition.left,
             placement.rcNormalPosition.bottom - placement.rcNormalPosition.top,
         );
+        // SAFETY: `placement` est une WINDOWPLACEMENT locale (avec son `length`), valide en lecture pendant l'appel.
         unsafe {
             SetWindowPlacement(hwnd, &placement);
         }
     }
     pub fn set_title_bar_color(&self, hwnd: HWND) {
+        // SAFETY: les pointeurs désignent des constantes DWORD (`CAPTION_COLOR`, `WHITE_TEXT_COLOR`), valides en lecture pendant l'appel avec leur taille exacte.
         unsafe {
             DwmSetWindowAttribute(
                 hwnd,
@@ -131,6 +140,7 @@ impl WindowStyle {
             } else {
                 HWND_NOTOPMOST
             };
+            // SAFETY: SetWindowLongA agit sur `hwnd` (fenêtre de ce fil) avec des styles mémorisés par cet objet ; aucune mémoire de l'appelant.
             unsafe {
                 SetWindowLongA(hwnd, GWL_STYLE, self.style);
                 SetWindowLongA(hwnd, GWL_EXSTYLE, self.ex_style);
@@ -138,6 +148,7 @@ impl WindowStyle {
             self.show_window_at(hwnd, topmost);
             self.full_screen = false;
         } else {
+            // SAFETY: les API reçoivent `hwnd` (fenêtre de ce fil) ou des structures locales (`rect`, `monitor_info` avec `cbSize` renseigné) valides en écriture pendant l'appel ; mem::zeroed produit des structures C d'entiers, valides à zéro.
             unsafe {
                 let mut rect = mem::zeroed();
                 GetWindowRect(hwnd, &mut rect);
@@ -191,6 +202,7 @@ impl WindowStyle {
                 HWND_NOTOPMOST
             };
             PIP_ACTIVE.store(false, Ordering::Relaxed);
+            // SAFETY: SetWindowLongA agit sur `hwnd` (fenêtre de ce fil) avec des styles mémorisés par cet objet ; aucune mémoire de l'appelant.
             unsafe {
                 SetWindowLongA(hwnd, GWL_STYLE, self.style);
                 SetWindowLongA(hwnd, GWL_EXSTYLE, self.ex_style);
@@ -202,6 +214,7 @@ impl WindowStyle {
         if self.full_screen {
             self.set_full_screen(hwnd, false);
         }
+        // SAFETY: les API reçoivent `hwnd` (fenêtre de ce fil) ou des structures locales (`rect`, `monitor_info` avec `cbSize` renseigné) valides en écriture pendant l'appel ; mem::zeroed produit des structures C d'entiers, valides à zéro.
         unsafe {
             let mut rect = mem::zeroed();
             GetWindowRect(hwnd, &mut rect);
@@ -239,6 +252,7 @@ impl WindowStyle {
         self.pip = true;
     }
     pub fn toggle_topmost(&mut self, hwnd: HWND) {
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         let topmost = if unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST
             == WS_EX_TOPMOST
         {
@@ -246,6 +260,7 @@ impl WindowStyle {
         } else {
             HWND_TOPMOST
         };
+        // SAFETY: SetWindowPos agit sur `hwnd` (fenêtre de ce fil) ; `pos` est un handle d'ordre Z valide ou un HWND_* spécial ; aucune mémoire de l'appelant.
         unsafe {
             SetWindowPos(
                 hwnd,
@@ -257,9 +272,11 @@ impl WindowStyle {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
             );
         }
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         self.ex_style = unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) };
     }
     pub fn set_active(&mut self, hwnd: HWND) {
+        // SAFETY: `hwnd` est la fenêtre principale, créée et utilisée sur le fil de l'interface (celui qui appelle) ; l'appel ne lit aucune mémoire de l'appelant.
         unsafe {
             SetForegroundWindow(hwnd);
         }

@@ -1,8 +1,14 @@
 use crate::stremio_app::gpu_video_processing;
 use crate::stremio_app::ipc;
+use crate::stremio_app::robust::{
+    join_with_timeout, lock, panic_message, report_error, OrReport, RestartPolicy, SERVICES,
+};
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
-use libmpv2::{events::Event, Format, Mpv, SetData};
+use libmpv2::{
+    events::{Event, PropertyData},
+    mpv_end_file_reason, Format, Mpv, SetData,
+};
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
     collections::VecDeque,
@@ -10,13 +16,14 @@ use std::{
     ffi::CString,
     mem,
     os::raw::c_char,
+    panic::{catch_unwind, AssertUnwindSafe},
     ptr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use winapi::shared::{
     minwindef::{DWORD, UINT},
@@ -144,6 +151,7 @@ fn start_next_subtitle(
             .collect::<Vec<_>>();
         let reply_id = *next_reply_id;
         *next_reply_id = (*next_reply_id).wrapping_add(1).max(1);
+        // SAFETY: `mpv.ctx` est un client mpv valide tant que `mpv` est emprunté ; `arg_ptrs` est un tableau terminé par un pointeur nul dont les chaînes (`args`) vivent jusqu'à la fin de l'appel, et mpv copie les arguments.
         let result = unsafe {
             libmpv2_sys::mpv_command_async(mpv.ctx.as_ptr(), reply_id, arg_ptrs.as_mut_ptr())
         };
@@ -165,93 +173,106 @@ fn start_next_subtitle(
 fn create_subtitle_thread(
     mut mpv: Mpv,
     request_receiver: Receiver<SubtitleWorkerRequest>,
-) -> JoinHandle<()> {
+) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("subtitle-loader".to_string())
         .spawn(move || {
-            let (wake_sender, wake_receiver) = flume::bounded(1);
-            mpv.set_wakeup_callback(move || {
-                let _ = wake_sender.try_send(());
-            });
-
-            let mut queue = VecDeque::new();
-            let mut in_flight: Option<InFlightSubtitle> = None;
-            let mut next_reply_id = 1;
-            let mut media_change = false;
-            let mut media_change_ack: Option<Sender<()>> = None;
-
-            loop {
-                let event = flume::Selector::new()
-                    .recv(&request_receiver, SubtitleWorkerEvent::Request)
-                    .recv(&wake_receiver, SubtitleWorkerEvent::Wake)
-                    .wait();
-
-                match event {
-                    SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::Command(command))) => {
-                        queue.push_back(command);
-                    }
-                    SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::BeginMediaChange(
-                        acknowledge,
-                    ))) => {
-                        media_change = true;
-                        queue.clear();
-                        if let Some(command) = &in_flight {
-                            media_change_ack = Some(acknowledge);
-                            unsafe {
-                                libmpv2_sys::mpv_abort_async_command(
-                                    mpv.ctx.as_ptr(),
-                                    command.reply_id,
-                                );
-                            }
-                        } else {
-                            let _ = acknowledge.send(());
-                        }
-                    }
-                    SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::EndMediaChange)) => {
-                        media_change = false;
-                    }
-                    SubtitleWorkerEvent::Request(Err(_)) | SubtitleWorkerEvent::Wake(Err(_)) => {
-                        break;
-                    }
-                    SubtitleWorkerEvent::Wake(Ok(())) => loop {
-                        let event = unsafe { &*libmpv2_sys::mpv_wait_event(mpv.ctx.as_ptr(), 0.0) };
-                        match event.event_id {
-                            libmpv2_sys::mpv_event_id_MPV_EVENT_NONE => break,
-                            libmpv2_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return,
-                            libmpv2_sys::mpv_event_id_MPV_EVENT_COMMAND_REPLY => {
-                                let Some(command) = &in_flight else {
-                                    continue;
-                                };
-                                if command.reply_id != event.reply_userdata {
-                                    continue;
-                                }
-                                let command = in_flight.take().expect("missing subtitle command");
-                                if event.error < 0 {
-                                    eprintln!(
-                                        "mpv: {} failed: {}",
-                                        command.name,
-                                        libmpv2_sys::mpv_error_str(event.error)
-                                    );
-                                }
-                                if let Some(acknowledge) = media_change_ack.take() {
-                                    let _ = acknowledge.send(());
-                                }
-                            }
-                            _ => {}
-                        }
-                    },
-                }
-
-                start_next_subtitle(
-                    &mpv,
-                    &mut queue,
-                    &mut in_flight,
-                    &mut next_reply_id,
-                    media_change,
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+                subtitle_worker(&mut mpv, request_receiver)
+            })) {
+                report_error(
+                    "lecteur: fil des sous-titres arrêté par une panique",
+                    &panic_message(payload.as_ref()),
                 );
             }
         })
-        .expect("failed to start subtitle worker")
+}
+
+fn subtitle_worker(mpv: &mut Mpv, request_receiver: Receiver<SubtitleWorkerRequest>) {
+    let (wake_sender, wake_receiver) = flume::bounded(1);
+    mpv.set_wakeup_callback(move || {
+        let _ = wake_sender.try_send(());
+    });
+
+    let mut queue = VecDeque::new();
+    let mut in_flight: Option<InFlightSubtitle> = None;
+    let mut next_reply_id = 1;
+    let mut media_change = false;
+    let mut media_change_ack: Option<Sender<()>> = None;
+
+    loop {
+        let event = flume::Selector::new()
+            .recv(&request_receiver, SubtitleWorkerEvent::Request)
+            .recv(&wake_receiver, SubtitleWorkerEvent::Wake)
+            .wait();
+
+        match event {
+            SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::Command(command))) => {
+                queue.push_back(command);
+            }
+            SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::BeginMediaChange(
+                acknowledge,
+            ))) => {
+                media_change = true;
+                queue.clear();
+                if let Some(command) = &in_flight {
+                    media_change_ack = Some(acknowledge);
+                    // SAFETY: `ctx` est le pointeur valide du client mpv que ce fil possède ; `mpv_abort_async_command`
+                    // accepte tout `reply_id` (un identifiant inconnu est ignoré) et peut être appelé depuis n'importe quel fil.
+                    unsafe {
+                        libmpv2_sys::mpv_abort_async_command(mpv.ctx.as_ptr(), command.reply_id);
+                    }
+                } else {
+                    let _ = acknowledge.send(());
+                }
+            }
+            SubtitleWorkerEvent::Request(Ok(SubtitleWorkerRequest::EndMediaChange)) => {
+                media_change = false;
+            }
+            SubtitleWorkerEvent::Request(Err(_)) | SubtitleWorkerEvent::Wake(Err(_)) => {
+                break;
+            }
+            SubtitleWorkerEvent::Wake(Ok(())) => loop {
+                // SAFETY: `ctx` est valide (client possédé par ce fil) ; mpv_wait_event renvoie toujours un événement
+                // non nul, valable jusqu'au prochain appel de mpv_wait_event sur ce client, et il n'y en a qu'un par tour.
+                let event = unsafe { &*libmpv2_sys::mpv_wait_event(mpv.ctx.as_ptr(), 0.0) };
+                match event.event_id {
+                    libmpv2_sys::mpv_event_id_MPV_EVENT_NONE => break,
+                    libmpv2_sys::mpv_event_id_MPV_EVENT_SHUTDOWN => return,
+                    libmpv2_sys::mpv_event_id_MPV_EVENT_COMMAND_REPLY => {
+                        if in_flight
+                            .as_ref()
+                            .is_none_or(|command| command.reply_id != event.reply_userdata)
+                        {
+                            continue;
+                        }
+                        let Some(command) = in_flight.take() else {
+                            continue;
+                        };
+                        if event.error < 0 {
+                            eprintln!(
+                                "mpv: {} failed: {}",
+                                command.name,
+                                libmpv2_sys::mpv_error_str(event.error)
+                            );
+                        }
+                        if let Some(acknowledge) = media_change_ack.take() {
+                            let _ = acknowledge.send(());
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        }
+
+        start_next_subtitle(
+            mpv,
+            &mut queue,
+            &mut in_flight,
+            &mut next_reply_id,
+            media_change,
+        );
+    }
 }
 
 #[derive(Debug, Default)]
@@ -274,6 +295,16 @@ impl VideoReadyState {
             self.pending_load_ids.push_back(self.next_load_id);
         }
         self.next_load_id
+    }
+
+    /// Après une relance de mpv : les chargements en attente de l'ancien mpv ne viendront plus. Les numéros restent
+    /// croissants pour que l'interface ne confonde pas deux chargements.
+    fn reset_for_restart(&mut self) {
+        self.current_load_id = None;
+        self.pending_load_ids.clear();
+        self.active_load_id = None;
+        self.file_loaded_id = None;
+        self.ready_sent_id = None;
     }
 
     fn start_file(&mut self) {
@@ -379,64 +410,339 @@ pub struct Player {
     pub channel: ipc::Channel,
 }
 
+/// Au plus `MAX_RESTARTS` relances de mpv sur `RESTART_WINDOW`, attente de 250 ms, 500 ms, 1 s.
+const MAX_RESTARTS: usize = 3;
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
+const RESTART_BASE_DELAY: Duration = Duration::from_millis(250);
+/// Temps laissé aux fils d'une instance de mpv pour s'arrêter.
+const GENERATION_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// Identifiant de l'observation interne de `time-pos` (l'interface utilise 0).
+const POSITION_OBSERVER_ID: u64 = u64::MAX;
+/// En dessous de cette position, la reprise repart du début.
+const MIN_RESUME_SECONDS: f64 = 1.0;
+/// Pas d'attente des fils de l'instance : réactivité à l'arrêt.
+const THREAD_POLL: Duration = Duration::from_millis(100);
+
+/// Ce qu'il faut rejouer sur un mpv relancé : réglages, propriétés observées, média en cours et sa position.
+#[derive(Debug, Default)]
+struct ResumeState {
+    properties: Vec<(PropKey, PropVal)>,
+    observed: Vec<PropKey>,
+    load: Option<CmdVal>,
+    position: Option<f64>,
+}
+
+impl ResumeState {
+    fn record_message(&mut self, message: &InMsg) {
+        match message {
+            InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(key, value)) => {
+                match self.properties.iter_mut().find(|(known, _)| known == key) {
+                    Some(entry) => entry.1 = value.clone(),
+                    None => self.properties.push((key.clone(), value.clone())),
+                }
+            }
+            InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(key)) => {
+                if !self.observed.contains(key) {
+                    self.observed.push(key.clone());
+                }
+            }
+            InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(command)) => match command {
+                CmdVal::Loadfile(_) | CmdVal::LoadfileAt(_, _) => {
+                    self.load = Some(command.clone());
+                    self.position = None;
+                }
+                CmdVal::Stop => self.clear_media(),
+                CmdVal::SubAdd(..) | CmdVal::SubRemove(_) => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// Plus de média à reprendre (arrêt demandé, ou fin de fichier).
+    fn clear_media(&mut self) {
+        self.load = None;
+        self.position = None;
+    }
+
+    fn record_position(&mut self, seconds: f64) {
+        if self.load.is_some() && seconds.is_finite() && seconds >= 0.0 {
+            self.position = Some(seconds);
+        }
+    }
+
+    /// Commande qui recharge le média à la dernière position connue (ou tel quel si elle est trop proche du début).
+    fn resume_command(&self) -> Option<CmdVal> {
+        let (CmdVal::Loadfile(url) | CmdVal::LoadfileAt(url, _)) = self.load.as_ref()? else {
+            return None;
+        };
+        match self.position {
+            Some(seconds) if seconds >= MIN_RESUME_SECONDS => Some(CmdVal::LoadfileAt(
+                url.clone(),
+                format!("start=+{seconds:.3}"),
+            )),
+            _ => self.load.clone(),
+        }
+    }
+
+    /// Messages à traiter avant tout autre sur un mpv relancé : réglages, observations, puis rechargement du média.
+    fn replay_messages(&self) -> Vec<InMsg> {
+        let mut messages: Vec<InMsg> = self
+            .properties
+            .iter()
+            .map(|(key, value)| {
+                InMsg(
+                    InMsgFn::MpvSetProp,
+                    InMsgArgs::StProp(key.clone(), value.clone()),
+                )
+            })
+            .collect();
+        messages.extend(
+            self.observed
+                .iter()
+                .map(|key| InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(key.clone()))),
+        );
+        if let Some(command) = self.resume_command() {
+            messages.push(InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(command)));
+        }
+        messages
+    }
+}
+
+/// Ce qui survit aux relances de mpv.
+#[derive(Clone)]
+struct PlayerContext {
+    window_handle: isize,
+    in_msg_receiver: Receiver<String>,
+    rpc_response_sender: Sender<String>,
+    video_ready_state: SharedVideoReadyState,
+    gpu_video_processing: Arc<AtomicBool>,
+    resume: Arc<Mutex<ResumeState>>,
+    /// Les fils d'une instance y signalent un arrêt inattendu de mpv.
+    died: Sender<String>,
+}
+
+fn signal_death(ctx: &PlayerContext, stop: &AtomicBool, cause: &str) {
+    if !stop.load(Ordering::SeqCst) {
+        let _ = ctx.died.send(cause.to_owned());
+    }
+}
+
+/// Fil d'une instance de mpv : une panique est journalisée et signalée comme un arrêt inattendu.
+fn spawn_guarded(
+    name: &'static str,
+    ctx: &PlayerContext,
+    stop: &Arc<AtomicBool>,
+    body: impl FnOnce() + Send + 'static,
+) -> Result<JoinHandle<()>, String> {
+    let ctx = ctx.clone();
+    let stop = Arc::clone(stop);
+    thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(body)) {
+                report_error(
+                    &format!("lecteur: fil {name} arrêté par une panique"),
+                    &panic_message(payload.as_ref()),
+                );
+                signal_death(&ctx, &stop, name);
+            }
+        })
+        .map_err(|error| format!("fil {name} non démarré: {error}"))
+}
+
+/// Une instance de mpv et ses fils (événements, affichage, messages de l'interface).
+struct Generation {
+    stop: Arc<AtomicBool>,
+    mpv: Arc<Mpv>,
+    threads: Vec<(&'static str, JoinHandle<()>)>,
+}
+
+impl Generation {
+    /// Crée mpv et démarre ses fils ; `preamble` est traité avant tout message de l'interface.
+    fn start(ctx: &PlayerContext, preamble: Vec<InMsg>) -> Result<Self, String> {
+        let mpv = create_mpv(ctx.window_handle as HWND)
+            .map_err(|error| format!("mpv: création impossible: {error}"))?;
+        let mut generation = Generation {
+            stop: Arc::new(AtomicBool::new(false)),
+            mpv: Arc::new(mpv),
+            threads: Vec::new(),
+        };
+        match generation.spawn_threads(ctx, preamble) {
+            Ok(()) => Ok(generation),
+            Err(error) => {
+                generation.stop();
+                Err(error)
+            }
+        }
+    }
+
+    fn spawn_threads(&mut self, ctx: &PlayerContext, preamble: Vec<InMsg>) -> Result<(), String> {
+        let event_client = self
+            .mpv
+            .create_client(None)
+            .map_err(|error| format!("mpv: client d'événements impossible: {error}"))?;
+        let subtitle_client = self
+            .mpv
+            .create_client(None)
+            .map_err(|error| format!("mpv: client de sous-titres impossible: {error}"))?;
+        let (observe_property_sender, observe_property_receiver) = flume::unbounded();
+
+        let event_ctx = ctx.clone();
+        let event_stop = Arc::clone(&self.stop);
+        let handle = spawn_guarded("mpv-events", ctx, &self.stop, move || {
+            run_event_loop(
+                event_client,
+                observe_property_receiver,
+                event_ctx,
+                event_stop,
+            )
+        })?;
+        self.threads.push(("mpv-events", handle));
+
+        let display_mpv = Arc::clone(&self.mpv);
+        let display_stop = Arc::clone(&self.stop);
+        let window_handle = ctx.window_handle;
+        let gpu_video_processing = Arc::clone(&ctx.gpu_video_processing);
+        let handle = spawn_guarded("mpv-display", ctx, &self.stop, move || {
+            run_display_loop(
+                display_mpv,
+                window_handle,
+                gpu_video_processing,
+                display_stop,
+            )
+        })?;
+        self.threads.push(("mpv-display", handle));
+
+        let message_mpv = Arc::clone(&self.mpv);
+        let message_ctx = ctx.clone();
+        let message_stop = Arc::clone(&self.stop);
+        let handle = spawn_guarded("mpv-messages", ctx, &self.stop, move || {
+            run_message_loop(
+                message_mpv,
+                subtitle_client,
+                message_ctx,
+                message_stop,
+                observe_property_sender,
+                preamble,
+            )
+        })?;
+        self.threads.push(("mpv-messages", handle));
+        Ok(())
+    }
+
+    /// Arrête les fils puis détruit mpv. Sans effet visible si mpv s'est déjà arrêté de lui-même.
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // `quit` termine le cœur même si un client traîne ; l'erreur est normale si mpv a déjà disparu.
+        let _ = self.mpv.command("quit", &[]);
+        let deadline = Instant::now() + GENERATION_STOP_TIMEOUT;
+        for (name, handle) in self.threads {
+            if !join_with_timeout(handle, deadline.saturating_duration_since(Instant::now())) {
+                report_error(&format!("lecteur: fil {name}"), &"toujours actif à l'arrêt");
+            }
+        }
+    }
+}
+
+/// Surveille mpv : après un arrêt inattendu, le relance (budget `RestartPolicy`) et rejoue réglages, observations et média
+/// à la dernière position connue. Budget épuisé : l'interface reçoit une fin de lecture en erreur.
+fn supervise_player(ctx: PlayerContext, first: Generation, died: Receiver<String>) {
+    let mut policy = RestartPolicy::new(MAX_RESTARTS, RESTART_WINDOW, RESTART_BASE_DELAY);
+    let mut current = Some(first);
+    while !SERVICES.is_shutdown() {
+        let cause = match died.recv_timeout(THREAD_POLL) {
+            Ok(cause) => cause,
+            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(flume::RecvTimeoutError::Disconnected) => break,
+        };
+        report_error("lecteur: arrêt inattendu de mpv", &cause);
+        if let Some(generation) = current.take() {
+            generation.stop();
+        }
+        while died.try_recv().is_ok() {}
+        current = restart_player(&ctx, &mut policy);
+        if current.is_none() {
+            report_error("lecteur", &"relances épuisées, mpv reste arrêté");
+            notify_player_lost(&ctx);
+            break;
+        }
+    }
+    if let Some(generation) = current {
+        generation.stop();
+    }
+}
+
+/// Relance mpv selon le budget ; `None` quand il est épuisé (ou à la fermeture).
+fn restart_player(ctx: &PlayerContext, policy: &mut RestartPolicy) -> Option<Generation> {
+    loop {
+        let delay = policy.on_failure(Instant::now())?;
+        if !SERVICES.sleep(delay) {
+            return None;
+        }
+        let preamble = lock(&ctx.resume, "reprise du lecteur").replay_messages();
+        lock(&ctx.video_ready_state, "état du lecteur").reset_for_restart();
+        match Generation::start(ctx, preamble) {
+            Ok(generation) => return Some(generation),
+            Err(error) => report_error("lecteur: relance de mpv échouée", &error),
+        }
+    }
+}
+
+/// L'interface apprend que la lecture est perdue pour de bon (fin en erreur).
+fn notify_player_lost(ctx: &PlayerContext) {
+    let response = PlayerResponse(
+        "mpv-event-ended",
+        PlayerEvent::End(PlayerEnded::from_end_reason(mpv_end_file_reason::Error)),
+    );
+    let _ = ctx
+        .rpc_response_sender
+        .send(RPCResponse::response_message(response.to_value()));
+}
+
 impl PartialUi for Player {
     fn build_partial<W: Into<nwg::ControlHandle>>(
         // @TODO replace with `&mut self`?
         data: &mut Self,
         parent: Option<W>,
     ) -> Result<(), nwg::NwgError> {
-        // @TODO replace all `expect`s with proper error handling?
-
-        let window_handle = parent
-            .expect("no parent window")
-            .into()
-            .hwnd()
-            .expect("cannot obtain window handle");
+        let Some(window_handle) = parent
+            .map(|parent| -> nwg::ControlHandle { parent.into() })
+            .and_then(|parent| parent.hwnd())
+        else {
+            return Err(nwg::NwgError::initialization(
+                "lecteur: fenêtre parente introuvable",
+            ));
+        };
 
         let (in_msg_sender, in_msg_receiver) = flume::unbounded();
         let (rpc_response_sender, rpc_response_receiver) = flume::unbounded();
-        let (observe_property_sender, observe_property_receiver) = flume::unbounded();
+        let (died_sender, died_receiver) = flume::unbounded();
         data.channel = ipc::Channel::new(Some((in_msg_sender, rpc_response_receiver)));
-        let video_ready_state = Arc::new(Mutex::new(VideoReadyState::default()));
 
-        let mpv = Arc::new(create_mpv(window_handle));
-        let mpv_event_client = mpv
-            .create_client(None)
-            .expect("cannot create MPV event client");
-        let _event_thread = create_event_thread(
-            mpv_event_client,
-            observe_property_receiver,
-            rpc_response_sender.clone(),
-            Arc::clone(&video_ready_state),
-        );
-        let gpu_video_processing = Arc::new(AtomicBool::new(false));
-        let _display_thread = create_display_output_thread(
-            Arc::clone(&mpv),
-            window_handle as isize,
-            Arc::clone(&gpu_video_processing),
-        );
-        let _message_thread = create_message_thread(
-            mpv,
-            window_handle as isize,
-            gpu_video_processing,
-            observe_property_sender,
+        let ctx = PlayerContext {
+            window_handle: window_handle as isize,
             in_msg_receiver,
             rpc_response_sender,
-            video_ready_state,
-        );
-        // @TODO implement a mechanism to stop threads on `Player` drop if needed
-
+            video_ready_state: Arc::new(Mutex::new(VideoReadyState::default())),
+            gpu_video_processing: Arc::new(AtomicBool::new(false)),
+            resume: Arc::new(Mutex::new(ResumeState::default())),
+            died: died_sender,
+        };
+        let first = Generation::start(&ctx, Vec::new()).map_err(nwg::NwgError::initialization)?;
+        SERVICES.spawn("mpv-supervisor", move || {
+            supervise_player(ctx, first, died_receiver)
+        });
         Ok(())
     }
 }
 
-fn create_mpv(window_handle: HWND) -> Mpv {
-    let mpv = Mpv::with_initializer(|initializer| {
+fn create_mpv(window_handle: HWND) -> Result<Mpv, libmpv2::Error> {
+    Mpv::with_initializer(|initializer| {
         macro_rules! set_property {
             ($name:literal, $value:expr) => {
                 initializer
                     .set_property($name, $value)
-                    .expect(concat!("failed to set ", $name));
+                    .or_report(concat!("mpv: réglage impossible de ", $name))?;
             };
         }
         set_property!("wid", window_handle as i64);
@@ -481,8 +787,7 @@ fn create_mpv(window_handle: HWND) -> Mpv {
             }
         }
         Ok(())
-    });
-    mpv.expect("cannot build MPV")
+    })
 }
 
 /// Tampon mpv par défaut (niveau « large »), appliqué à l'init avant tout `loadfile`.
@@ -499,24 +804,29 @@ fn default_buffer_options() -> [(&'static str, &'static str); 6] {
     ]
 }
 
-fn create_display_output_thread(
+fn run_display_loop(
     mpv: Arc<Mpv>,
     window_handle: isize,
     gpu_video_processing: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let mut last_state = None;
+    stop: Arc<AtomicBool>,
+) {
+    let mut last_state = None;
 
-        loop {
-            let state = current_display_output_state(&mpv, window_handle as HWND);
-            let gpu = gpu_video_processing.load(Ordering::Relaxed);
-            if last_state != Some((state, gpu)) {
-                apply_display_output_mode(&mpv, state, gpu);
-                last_state = Some((state, gpu));
-            }
-            thread::sleep(Duration::from_millis(500));
+    while !stop.load(Ordering::SeqCst) {
+        let state = current_display_output_state(&mpv, window_handle as HWND);
+        let gpu = gpu_video_processing.load(Ordering::Relaxed);
+        if last_state != Some((state, gpu)) {
+            apply_display_output_mode(&mpv, state, gpu);
+            last_state = Some((state, gpu));
         }
-    })
+        // Dort 500 ms par tranches pour réagir vite à l'arrêt.
+        for _ in 0..5 {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(THREAD_POLL);
+        }
+    }
 }
 
 fn current_display_output_state(mpv: &Mpv, window_handle: HWND) -> DisplayOutputState {
@@ -527,6 +837,7 @@ fn current_display_output_state(mpv: &Mpv, window_handle: HWND) -> DisplayOutput
 }
 
 fn current_display_output_mode(window_handle: HWND) -> DisplayOutputMode {
+    // SAFETY: MonitorFromWindow accepte tout HWND (un handle invalide donne le moniteur le plus proche par défaut) et ne lit aucune mémoire de l'appelant.
     let monitor = unsafe { MonitorFromWindow(window_handle, MONITOR_DEFAULTTONEAREST) };
     match monitor_hdr_active(monitor) {
         Some(true) => DisplayOutputMode::Hdr,
@@ -556,13 +867,16 @@ fn current_video_height(mpv: &Mpv) -> Option<f64> {
 }
 
 fn current_monitor_height(window_handle: HWND) -> Option<f64> {
+    // SAFETY: MonitorFromWindow accepte tout HWND (un handle invalide donne le moniteur le plus proche par défaut) et ne lit aucune mémoire de l'appelant.
     let monitor = unsafe { MonitorFromWindow(window_handle, MONITOR_DEFAULTTONEAREST) };
     if monitor.is_null() {
         return None;
     }
 
+    // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
     let mut monitor_info: MONITORINFO = unsafe { mem::zeroed() };
     monitor_info.cbSize = mem::size_of::<MONITORINFO>() as DWORD;
+    // SAFETY: `monitor` est non nul (testé plus haut) ; `monitor_info` est initialisée avec le `cbSize` correct et reste valide en écriture pendant l'appel.
     if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) } == 0 {
         return None;
     }
@@ -626,10 +940,12 @@ fn monitor_hdr_active(monitor: HMONITOR) -> Option<bool> {
 }
 
 fn monitor_device_name(monitor: HMONITOR) -> Option<[u16; 32]> {
+    // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
     let mut monitor_info: MONITORINFOEXW = unsafe { mem::zeroed() };
     monitor_info.cbSize = mem::size_of::<MONITORINFOEXW>() as DWORD;
 
     let result =
+        // SAFETY: `monitor` est non nul (testé par l'appelant) ; MONITORINFOEXW commence par un MONITORINFO, le cast est la convention de l'API, et `cbSize` annonce la taille réelle.
         unsafe { GetMonitorInfoW(monitor, &mut monitor_info as *mut _ as *mut MONITORINFO) };
     if result == 0 {
         None
@@ -642,6 +958,7 @@ fn active_display_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
     for _ in 0..3 {
         let mut path_count = 0;
         let mut mode_count = 0;
+        // SAFETY: les deux compteurs sont des entiers locaux, valides en écriture pendant l'appel.
         let buffer_status = unsafe {
             GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
         };
@@ -650,9 +967,12 @@ fn active_display_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
         }
 
         let mut paths =
+            // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
             vec![unsafe { mem::zeroed::<DISPLAYCONFIG_PATH_INFO>() }; path_count as usize];
         let mut modes =
+            // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
             vec![unsafe { mem::zeroed::<DISPLAYCONFIG_MODE_INFO>() }; mode_count as usize];
+        // SAFETY: `paths` et `modes` contiennent au moins `path_count` et `mode_count` éléments initialisés ; les compteurs sont valides en écriture ; la topologie (pointeur nul) est facultative avec QDC_ONLY_ACTIVE_PATHS.
         let query_status = unsafe {
             QueryDisplayConfig(
                 QDC_ONLY_ACTIVE_PATHS,
@@ -677,6 +997,7 @@ fn active_display_paths() -> Option<Vec<DISPLAYCONFIG_PATH_INFO>> {
 }
 
 fn display_source_name(path: &DISPLAYCONFIG_PATH_INFO) -> Option<DISPLAYCONFIG_SOURCE_DEVICE_NAME> {
+    // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
     let mut source_name: DISPLAYCONFIG_SOURCE_DEVICE_NAME = unsafe { mem::zeroed() };
     source_name.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
         _type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
@@ -685,6 +1006,7 @@ fn display_source_name(path: &DISPLAYCONFIG_PATH_INFO) -> Option<DISPLAYCONFIG_S
         id: path.sourceInfo.id,
     };
 
+    // SAFETY: l'en-tête est le premier champ de `source_name` ; son `type` et sa `size` décrivent la structure entière, valide en écriture pendant l'appel.
     let status = unsafe { DisplayConfigGetDeviceInfo(&mut source_name.header) };
     if status == ERROR_SUCCESS as LONG {
         Some(source_name)
@@ -694,6 +1016,7 @@ fn display_source_name(path: &DISPLAYCONFIG_PATH_INFO) -> Option<DISPLAYCONFIG_S
 }
 
 fn display_hdr_active(path: &DISPLAYCONFIG_PATH_INFO) -> Option<bool> {
+    // SAFETY: structure C de données brutes (entiers et pointeurs nuls admis) : tous les bits à zéro forment une valeur valide.
     let mut color_info: DisplayconfigGetAdvancedColorInfo2 = unsafe { mem::zeroed() };
     color_info.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
         _type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2,
@@ -702,6 +1025,7 @@ fn display_hdr_active(path: &DISPLAYCONFIG_PATH_INFO) -> Option<bool> {
         id: path.targetInfo.id,
     };
 
+    // SAFETY: l'en-tête est le premier champ de `color_info` (repr(C)) ; son `type` et sa `size` décrivent la structure entière, valide en écriture pendant l'appel.
     let status = unsafe { DisplayConfigGetDeviceInfo(&mut color_info.header) };
     if status == ERROR_SUCCESS as LONG {
         Some(color_info.active_color_mode == DISPLAYCONFIG_ADVANCED_COLOR_MODE_HDR)
@@ -710,243 +1034,412 @@ fn display_hdr_active(path: &DISPLAYCONFIG_PATH_INFO) -> Option<bool> {
     }
 }
 
-fn create_event_thread(
-    mpv_event_client: Mpv,
-    observe_property_receiver: Receiver<ObserveProperty>,
-    rpc_response_sender: Sender<String>,
-    video_ready_state: SharedVideoReadyState,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        mpv_event_client
-            .disable_deprecated_events()
-            .expect("failed to disable deprecated MPV events");
-
-        // -- Event handler loop --
-
-        loop {
-            for ObserveProperty { name, format } in observe_property_receiver.drain() {
-                mpv_event_client
-                    .observe_property(&name, format, 0)
-                    .expect("failed to observer MPV property");
-            }
-
-            let event = match mpv_event_client.wait_event(0.1) {
-                Some(Ok(event)) => event,
-                Some(Err(error)) => {
-                    eprintln!("Event errored: {error:?}");
-                    continue;
-                }
-                // dummy event received (may be created on a wake up call or on timeout)
-                None => continue,
-            };
-
-            if matches!(&event, Event::StartFile) {
-                video_ready_state
-                    .lock()
-                    .expect("cannot lock video readiness state")
-                    .start_file();
-                continue;
-            }
-
-            if matches!(&event, Event::FileLoaded) {
-                video_ready_state
-                    .lock()
-                    .expect("cannot lock video readiness state")
-                    .file_loaded();
-                continue;
-            }
-
-            if matches!(&event, Event::PlaybackRestart) {
-                let load_id = video_ready_state
-                    .lock()
-                    .expect("cannot lock video readiness state")
-                    .playback_restarted();
-                if let Some(load_id) = load_id {
-                    send_video_ready(&rpc_response_sender, load_id, true);
-                }
-                continue;
-            }
-
-            // even if you don't do anything with the events, it is still necessary to empty the event loop
-            let player_response = match event {
-                Event::PropertyChange { name, change, .. } => PlayerResponse(
-                    "mpv-prop-change",
-                    PlayerEvent::PropChange(PlayerProprChange::from_name_value(
-                        name.to_string(),
-                        change,
-                    )),
-                ),
-                Event::EndFile(reason) => PlayerResponse(
-                    "mpv-event-ended",
-                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
-                ),
-                Event::Shutdown => {
-                    break;
-                }
-                _ => continue,
-            };
-
-            if let Err(error) =
-                rpc_response_sender.send(RPCResponse::response_message(player_response.to_value()))
-            {
-                eprintln!("failed to send RPCResponse: {error}");
-                break;
-            }
-        }
+/// Réponse d'un changement de propriété ; une valeur que `communication.rs` ne sait pas convertir (nombre non fini,
+/// JSON invalide) est journalisée et ignorée au lieu de tuer le fil des événements.
+fn prop_change_response(name: &str, change: PropertyData) -> Option<PlayerResponse<'static>> {
+    catch_unwind(AssertUnwindSafe(|| {
+        PlayerResponse(
+            "mpv-prop-change",
+            PlayerEvent::PropChange(PlayerProprChange::from_name_value(name.to_string(), change)),
+        )
+    }))
+    .map_err(|payload| {
+        report_error(
+            &format!("lecteur: valeur de {name} illisible"),
+            &panic_message(payload.as_ref()),
+        )
     })
+    .ok()
 }
 
-fn create_message_thread(
-    mpv: Arc<Mpv>,
-    window_handle: isize,
-    gpu_video_processing: Arc<AtomicBool>,
-    observe_property_sender: Sender<ObserveProperty>,
-    in_msg_receiver: Receiver<String>,
-    rpc_response_sender: Sender<String>,
-    video_ready_state: SharedVideoReadyState,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        // -- Helpers --
-        let subtitle_mpv = mpv
-            .create_client(None)
-            .expect("cannot create MPV subtitle client");
-        let (subtitle_request_sender, subtitle_request_receiver) = flume::unbounded();
-        let _subtitle_thread = create_subtitle_thread(subtitle_mpv, subtitle_request_receiver);
+fn run_event_loop(
+    mpv_event_client: Mpv,
+    observe_property_receiver: Receiver<ObserveProperty>,
+    ctx: PlayerContext,
+    stop: Arc<AtomicBool>,
+) {
+    let _ = mpv_event_client
+        .disable_deprecated_events()
+        .or_report("lecteur: événements obsolètes non désactivés");
+    let _ = mpv_event_client
+        .observe_property("time-pos", Format::Double, POSITION_OBSERVER_ID)
+        .or_report("lecteur: position non observée");
+    // La position n'est retenue qu'une fois le fichier courant chargé (pas celle du précédent).
+    let mut position_valid = false;
 
-        let observe_property = |name: String, format: Format| {
-            if let Err(error) = observe_property_sender.send(ObserveProperty { name, format }) {
-                eprintln!("cannot send ObserveProperty: {error}");
+    // -- Event handler loop --
+
+    while !stop.load(Ordering::SeqCst) {
+        for ObserveProperty { name, format } in observe_property_receiver.drain() {
+            let _ = mpv_event_client
+                .observe_property(&name, format, 0)
+                .or_report(&format!("lecteur: propriété {name} non observée"));
+        }
+
+        let event = match mpv_event_client.wait_event(0.1) {
+            Some(Ok(event)) => event,
+            Some(Err(error)) => {
+                eprintln!("Event errored: {error:?}");
+                continue;
             }
+            // dummy event received (may be created on a wake up call or on timeout)
+            None => continue,
         };
 
-        let send_command = |cmd: CmdVal| {
-            let cmd = match SubtitleCommand::try_from(cmd) {
-                Ok(command) => {
-                    if subtitle_request_sender
-                        .send(SubtitleWorkerRequest::Command(command))
-                        .is_err()
-                    {
-                        eprintln!("mpv: subtitle worker stopped");
-                    }
-                    return;
+        if let Event::PropertyChange {
+            change: PropertyData::Double(seconds),
+            reply_userdata: POSITION_OBSERVER_ID,
+            ..
+        } = &event
+        {
+            if position_valid {
+                lock(&ctx.resume, "reprise du lecteur").record_position(*seconds);
+            }
+            continue;
+        }
+
+        if matches!(&event, Event::StartFile) {
+            position_valid = false;
+            lock(&ctx.video_ready_state, "état du lecteur").start_file();
+            continue;
+        }
+
+        if matches!(&event, Event::FileLoaded) {
+            position_valid = true;
+            lock(&ctx.video_ready_state, "état du lecteur").file_loaded();
+            continue;
+        }
+
+        if matches!(&event, Event::PlaybackRestart) {
+            let load_id = lock(&ctx.video_ready_state, "état du lecteur").playback_restarted();
+            if let Some(load_id) = load_id {
+                send_video_ready(&ctx.rpc_response_sender, load_id, true);
+            }
+            continue;
+        }
+
+        // even if you don't do anything with the events, it is still necessary to empty the event loop
+        let player_response = match event {
+            Event::PropertyChange { name, change, .. } => {
+                match prop_change_response(name, change) {
+                    Some(response) => response,
+                    None => continue,
                 }
-                Err(command) => command,
-            };
-            let media_transition = cmd.media_transition();
-            let (acknowledge, acknowledged) = flume::bounded(1);
-            if subtitle_request_sender
-                .send(SubtitleWorkerRequest::BeginMediaChange(acknowledge))
-                .is_err()
-                || acknowledged.recv().is_err()
-            {
-                eprintln!("mpv: subtitle worker stopped before media change");
+            }
+            Event::EndFile(reason) => {
+                // Fin de fichier ou erreur : plus rien à reprendre. (`Stop` accompagne un remplacement de média.)
+                if reason == mpv_end_file_reason::Eof || reason == mpv_end_file_reason::Error {
+                    lock(&ctx.resume, "reprise du lecteur").clear_media();
+                }
+                PlayerResponse(
+                    "mpv-event-ended",
+                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
+                )
+            }
+            Event::Shutdown => {
+                signal_death(&ctx, &stop, "mpv s'est arrêté");
+                break;
+            }
+            _ => continue,
+        };
+
+        if let Err(error) = ctx
+            .rpc_response_sender
+            .send(RPCResponse::response_message(player_response.to_value()))
+        {
+            eprintln!("failed to send RPCResponse: {error}");
+            break;
+        }
+    }
+}
+
+fn run_message_loop(
+    mpv: Arc<Mpv>,
+    subtitle_mpv: Mpv,
+    ctx: PlayerContext,
+    stop: Arc<AtomicBool>,
+    observe_property_sender: Sender<ObserveProperty>,
+    preamble: Vec<InMsg>,
+) {
+    // -- Helpers --
+    let (subtitle_request_sender, subtitle_request_receiver) = flume::unbounded();
+    let subtitle_thread = create_subtitle_thread(subtitle_mpv, subtitle_request_receiver)
+        .map_err(|error| report_error("lecteur: fil des sous-titres non démarré", &error))
+        .ok();
+
+    let observe_property = |name: String, format: Format| {
+        if let Err(error) = observe_property_sender.send(ObserveProperty { name, format }) {
+            eprintln!("cannot send ObserveProperty: {error}");
+        }
+    };
+
+    let send_command = |cmd: CmdVal| {
+        let cmd = match SubtitleCommand::try_from(cmd) {
+            Ok(command) => {
+                if subtitle_request_sender
+                    .send(SubtitleWorkerRequest::Command(command))
+                    .is_err()
+                {
+                    eprintln!("mpv: subtitle worker stopped");
+                }
                 return;
             }
-            let parts: Vec<String> = cmd.into();
-            if let Some((name, args)) = parts.split_first() {
-                if let Some(loads_file) = media_transition {
-                    let load_id = video_ready_state
-                        .lock()
-                        .expect("cannot lock video readiness state")
-                        .begin_transition(loads_file);
-                    send_video_ready(&rpc_response_sender, load_id, false);
-                }
-                let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-                if let Err(error) = mpv.command(name, &args) {
-                    eprintln!("failed to execute MPV command: '{error:#}'")
+            Err(command) => command,
+        };
+        let media_transition = cmd.media_transition();
+        let (acknowledge, acknowledged) = flume::bounded(1);
+        // Sans fil de sous-titres, la commande média part quand même : la lecture ne dépend pas de lui.
+        if subtitle_request_sender
+            .send(SubtitleWorkerRequest::BeginMediaChange(acknowledge))
+            .is_err()
+            || acknowledged.recv().is_err()
+        {
+            eprintln!("mpv: subtitle worker stopped before media change");
+        }
+        let parts: Vec<String> = cmd.into();
+        if let Some((name, args)) = parts.split_first() {
+            if let Some(loads_file) = media_transition {
+                let load_id =
+                    lock(&ctx.video_ready_state, "état du lecteur").begin_transition(loads_file);
+                send_video_ready(&ctx.rpc_response_sender, load_id, false);
+            }
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            if let Err(error) = mpv.command(name, &args) {
+                eprintln!("failed to execute MPV command: '{error:#}'")
+            }
+        }
+        if subtitle_request_sender
+            .send(SubtitleWorkerRequest::EndMediaChange)
+            .is_err()
+        {
+            eprintln!("mpv: subtitle worker stopped after media change");
+        }
+    };
+
+    fn set_property(name: impl ToString, value: impl SetData, mpv: &Mpv) {
+        if let Err(error) = mpv.set_property(&name.to_string(), value) {
+            eprintln!("cannot set MPV property: '{error:#}'")
+        }
+    }
+
+    let handle = |in_msg: InMsg| match in_msg {
+        InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Bool(prop))) => {
+            observe_property(prop.to_string(), Format::Flag);
+        }
+        InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Int(prop))) => {
+            observe_property(prop.to_string(), Format::Int64);
+        }
+        InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Fp(prop))) => {
+            observe_property(prop.to_string(), Format::Double);
+        }
+        InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Str(prop))) => {
+            observe_property(prop.to_string(), Format::String);
+        }
+        InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Bool(value))) => {
+            set_property(name, value, &mpv);
+        }
+        InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Num(value))) => {
+            // JSON numbers arrive as f64, but libmpv refuses a double for an integer
+            // property (aid, sid, vid... -> MPV_ERROR_PROPERTY_FORMAT): fall back to int64.
+            let name = name.to_string();
+            if mpv.set_property(&name, value).is_err() {
+                match integral_value(value) {
+                    Some(int) => set_property(&name, int, &mpv),
+                    None => set_property(&name, value, &mpv),
                 }
             }
-            if subtitle_request_sender
-                .send(SubtitleWorkerRequest::EndMediaChange)
-                .is_err()
-            {
-                eprintln!("mpv: subtitle worker stopped after media change");
+        }
+        InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Str(value))) => {
+            let is_vo = name.to_string() == "vo";
+            let value = if is_vo {
+                with_gpu_next_fallback(value)
+            } else {
+                value
+            };
+            set_property(name, value, &mpv);
+            // vo reinit reverts color props to defaults; re-assert for the current display.
+            if is_vo {
+                apply_display_output_mode(
+                    &mpv,
+                    current_display_output_state(&mpv, ctx.window_handle as HWND),
+                    ctx.gpu_video_processing.load(Ordering::Relaxed),
+                );
+            }
+        }
+        InMsg(InMsgFn::MpvSetGpuVideoProcessing, InMsgArgs::Flag(enabled)) => {
+            ctx.gpu_video_processing.store(enabled, Ordering::Relaxed);
+            apply_display_output_mode(
+                &mpv,
+                current_display_output_state(&mpv, ctx.window_handle as HWND),
+                enabled,
+            );
+        }
+        InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd)) => {
+            send_command(cmd);
+        }
+        msg => {
+            eprintln!("MPV unsupported message: '{msg:?}'");
+        }
+    };
+
+    // -- Reprise après une relance de mpv : ces messages passent avant ceux de l'interface --
+
+    for in_msg in preamble {
+        handle(in_msg);
+    }
+
+    // -- InMsg handler loop --
+
+    while !stop.load(Ordering::SeqCst) {
+        let msg = match ctx.in_msg_receiver.recv_timeout(THREAD_POLL) {
+            Ok(msg) => msg,
+            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(flume::RecvTimeoutError::Disconnected) => break,
+        };
+        let in_msg: InMsg = match serde_json::from_str(&msg) {
+            Ok(in_msg) => in_msg,
+            Err(error) => {
+                eprintln!("cannot parse InMsg:{:?} {error:#}", msg);
+                continue;
             }
         };
+        lock(&ctx.resume, "reprise du lecteur").record_message(&in_msg);
+        handle(in_msg);
+    }
 
-        fn set_property(name: impl ToString, value: impl SetData, mpv: &Mpv) {
-            if let Err(error) = mpv.set_property(&name.to_string(), value) {
-                eprintln!("cannot set MPV property: '{error:#}'")
-            }
+    // Les fils des sous-titres s'arrêtent quand leur canal se ferme.
+    drop(subtitle_request_sender);
+    if let Some(handle) = subtitle_thread {
+        if !join_with_timeout(handle, GENERATION_STOP_TIMEOUT) {
+            report_error("lecteur: fil des sous-titres", &"toujours actif à l'arrêt");
         }
-
-        // -- InMsg handler loop --
-
-        for msg in in_msg_receiver.iter() {
-            let in_msg: InMsg = match serde_json::from_str(&msg) {
-                Ok(in_msg) => in_msg,
-                Err(error) => {
-                    eprintln!("cannot parse InMsg:{:?} {error:#}", msg);
-                    continue;
-                }
-            };
-
-            match in_msg {
-                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Bool(prop))) => {
-                    observe_property(prop.to_string(), Format::Flag);
-                }
-                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Int(prop))) => {
-                    observe_property(prop.to_string(), Format::Int64);
-                }
-                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Fp(prop))) => {
-                    observe_property(prop.to_string(), Format::Double);
-                }
-                InMsg(InMsgFn::MpvObserveProp, InMsgArgs::ObProp(PropKey::Str(prop))) => {
-                    observe_property(prop.to_string(), Format::String);
-                }
-                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Bool(value))) => {
-                    set_property(name, value, &mpv);
-                }
-                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Num(value))) => {
-                    // JSON numbers arrive as f64, but libmpv refuses a double for an integer
-                    // property (aid, sid, vid... -> MPV_ERROR_PROPERTY_FORMAT): fall back to int64.
-                    let name = name.to_string();
-                    if mpv.set_property(&name, value).is_err() {
-                        match integral_value(value) {
-                            Some(int) => set_property(&name, int, &mpv),
-                            None => set_property(&name, value, &mpv),
-                        }
-                    }
-                }
-                InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(name, PropVal::Str(value))) => {
-                    let is_vo = name.to_string() == "vo";
-                    let value = if is_vo {
-                        with_gpu_next_fallback(value)
-                    } else {
-                        value
-                    };
-                    set_property(name, value, &mpv);
-                    // vo reinit reverts color props to defaults; re-assert for the current display.
-                    if is_vo {
-                        apply_display_output_mode(
-                            &mpv,
-                            current_display_output_state(&mpv, window_handle as HWND),
-                            gpu_video_processing.load(Ordering::Relaxed),
-                        );
-                    }
-                }
-                InMsg(InMsgFn::MpvSetGpuVideoProcessing, InMsgArgs::Flag(enabled)) => {
-                    gpu_video_processing.store(enabled, Ordering::Relaxed);
-                    apply_display_output_mode(
-                        &mpv,
-                        current_display_output_state(&mpv, window_handle as HWND),
-                        enabled,
-                    );
-                }
-                InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(cmd)) => {
-                    send_command(cmd);
-                }
-                msg => {
-                    eprintln!("MPV unsupported message: '{msg:?}'");
-                }
-            }
-        }
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_buffer_options, VideoReadyState};
+    use super::{default_buffer_options, ResumeState, VideoReadyState};
+    use crate::stremio_app::stremio_player::communication::{BoolProp, FpProp};
+    use crate::stremio_app::stremio_player::{CmdVal, InMsg, InMsgArgs, InMsgFn, PropKey, PropVal};
+    use std::convert::TryFrom;
+
+    fn set_prop(key: PropKey, value: PropVal) -> InMsg {
+        InMsg(InMsgFn::MpvSetProp, InMsgArgs::StProp(key, value))
+    }
+
+    fn load(url: &str) -> InMsg {
+        InMsg(
+            InMsgFn::MpvCommand,
+            InMsgArgs::Cmd(CmdVal::Loadfile(url.to_owned())),
+        )
+    }
+
+    #[test]
+    fn restart_replays_settings_observations_then_resumes_at_the_known_position() {
+        let mut resume = ResumeState::default();
+        resume.record_message(&set_prop(PropKey::Fp(FpProp::Volume), PropVal::Num(40.0)));
+        resume.record_message(&set_prop(PropKey::Fp(FpProp::Volume), PropVal::Num(70.0)));
+        resume.record_message(&InMsg(
+            InMsgFn::MpvObserveProp,
+            InMsgArgs::ObProp(PropKey::Fp(FpProp::TimePos)),
+        ));
+        resume.record_message(&load("http://127.0.0.1/film.mkv"));
+        resume.record_position(123.4567);
+
+        assert_eq!(
+            resume.replay_messages(),
+            vec![
+                set_prop(PropKey::Fp(FpProp::Volume), PropVal::Num(70.0)),
+                InMsg(
+                    InMsgFn::MpvObserveProp,
+                    InMsgArgs::ObProp(PropKey::Fp(FpProp::TimePos))
+                ),
+                InMsg(
+                    InMsgFn::MpvCommand,
+                    InMsgArgs::Cmd(CmdVal::LoadfileAt(
+                        "http://127.0.0.1/film.mkv".to_owned(),
+                        "start=+123.457".to_owned()
+                    ))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn resume_command_is_accepted_by_the_command_whitelist() {
+        let mut resume = ResumeState::default();
+        resume.record_message(&load("http://127.0.0.1/film.mkv"));
+        resume.record_position(42.0);
+        let Some(command) = resume.resume_command() else {
+            panic!("une reprise est attendue");
+        };
+        let wire: Vec<String> = command.clone().into();
+        assert_eq!(CmdVal::try_from(wire), Ok(command));
+    }
+
+    #[test]
+    fn near_the_start_the_original_load_is_replayed_unchanged() {
+        let mut resume = ResumeState::default();
+        resume.record_message(&load("a.mkv"));
+        assert_eq!(
+            resume.resume_command(),
+            Some(CmdVal::Loadfile("a.mkv".to_owned()))
+        );
+        resume.record_position(0.4);
+        assert_eq!(
+            resume.resume_command(),
+            Some(CmdVal::Loadfile("a.mkv".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_new_load_forgets_the_old_position_and_stop_or_end_forget_the_media() {
+        let mut resume = ResumeState::default();
+        resume.record_message(&load("a.mkv"));
+        resume.record_position(300.0);
+        resume.record_message(&load("b.mkv"));
+        assert_eq!(resume.position, None);
+
+        resume.record_position(f64::NAN);
+        assert_eq!(resume.position, None);
+
+        resume.record_position(10.0);
+        resume.record_message(&InMsg(InMsgFn::MpvCommand, InMsgArgs::Cmd(CmdVal::Stop)));
+        assert_eq!(resume.resume_command(), None);
+
+        resume.record_message(&load("c.mkv"));
+        resume.clear_media();
+        assert!(resume.replay_messages().is_empty());
+        // Sans média, une position tardive est ignorée.
+        resume.record_position(5.0);
+        assert_eq!(resume.position, None);
+    }
+
+    #[test]
+    fn observed_properties_are_not_duplicated() {
+        let mut resume = ResumeState::default();
+        let observe = InMsg(
+            InMsgFn::MpvObserveProp,
+            InMsgArgs::ObProp(PropKey::Bool(BoolProp::Pause)),
+        );
+        resume.record_message(&observe);
+        resume.record_message(&observe);
+        assert_eq!(resume.replay_messages(), vec![observe]);
+    }
+
+    #[test]
+    fn restart_drops_pending_loads_but_keeps_load_numbers_increasing() {
+        let mut state = VideoReadyState::default();
+        let before = state.begin_transition(true);
+        state.reset_for_restart();
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), None);
+        let after = state.begin_transition(true);
+        assert!(after > before);
+        state.start_file();
+        state.file_loaded();
+        assert_eq!(state.playback_restarted(), Some(after));
+    }
 
     #[test]
     fn ready_follows_file_loaded_restart_once() {

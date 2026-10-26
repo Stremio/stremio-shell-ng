@@ -32,6 +32,7 @@ use crate::stremio_app::{
     downloads,
     ipc::{check_command, CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
+    robust::{self, SERVICES},
     shell_config,
     splash::SplashImage,
     stremio_player::Player,
@@ -40,10 +41,13 @@ use crate::stremio_app::{
     updater,
     window_helper::{WindowStyle, PIP_ACTIVE},
     window_settings::WindowSettings,
-    PipeServer,
+    PipeClient, PipeServer,
 };
 
 use super::stremio_server::{ServerEvent, StremioServer};
+
+/// Temps total laissé aux fils de service pour s'arrêter à la fermeture.
+const SHUTDOWN_TIMEOUT: time::Duration = time::Duration::from_secs(3);
 
 /// Window operation asked by the Web UI and run on the UI thread.
 pub enum WindowRequest {
@@ -128,7 +132,7 @@ pub struct MainWindow {
     #[nwg_events(OnNotice: [Self::on_set_interface_scale_notice] )]
     pub set_interface_scale_notice: nwg::Notice,
     #[nwg_control]
-    #[nwg_events(OnNotice: [nwg::stop_thread_dispatch()] )]
+    #[nwg_events(OnNotice: [Self::on_exit] )]
     pub quit_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_hide_splash_notice] )]
@@ -167,9 +171,10 @@ impl MainWindow {
             self.webview.channel.try_borrow(),
             self.saved_window_style.try_borrow(),
         ) {
-            let (web_tx, _) = web_channel
-                .as_ref()
-                .expect("Cannont obtain communication channel for the Web UI");
+            let Some((web_tx, _)) = web_channel.as_ref() else {
+                eprintln!("Cannot obtain communication channel for the Web UI");
+                return;
+            };
             let web_tx_app = web_tx.clone();
             web_tx_app
                 .send(RPCResponse::visibility_change(
@@ -190,9 +195,10 @@ impl MainWindow {
         ) {
             let state = style.clone().get_window_state(hwnd);
             drop(style);
-            let (web_tx, _) = web_channel
-                .as_ref()
-                .expect("Cannont obtain communication channel for the Web UI");
+            let Some((web_tx, _)) = web_channel.as_ref() else {
+                eprintln!("Cannot obtain communication channel for the Web UI");
+                return;
+            };
             let web_tx_app = web_tx.clone();
             web_tx_app.send(RPCResponse::state_change(state)).ok();
         } else {
@@ -200,6 +206,7 @@ impl MainWindow {
         }
     }
     fn on_init(&self) {
+        robust::install_panic_hook();
         self.webview.dev_tools.set(self.dev_tools).ok();
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
@@ -241,16 +248,18 @@ impl MainWindow {
         }
 
         let player_channel = self.player.channel.borrow();
-        let (player_tx, player_rx) = player_channel
-            .as_ref()
-            .expect("Cannont obtain communication channel for the Player");
+        let Some((player_tx, player_rx)) = player_channel.as_ref() else {
+            robust::report_error("on_init", &"canal du lecteur indisponible");
+            return;
+        };
         let player_tx = player_tx.clone();
         let player_rx = player_rx.clone();
 
         let web_channel = self.webview.channel.borrow();
-        let (web_tx, web_rx) = web_channel
-            .as_ref()
-            .expect("Cannont obtain communication channel for the Web UI");
+        let Some((web_tx, web_rx)) = web_channel.as_ref() else {
+            robust::report_error("on_init", &"canal de l'interface web indisponible");
+            return;
+        };
         let web_tx_player = web_tx.clone();
         let web_tx_web = web_tx.clone();
         let web_tx_open = web_tx.clone();
@@ -264,10 +273,10 @@ impl MainWindow {
         let open_sender_web = open_sender.clone();
         *self.open_media_sender.borrow_mut() = Some(open_sender.clone());
         let command = self.command.clone();
-        thread::spawn(move || {
+        SERVICES.spawn("open-media", move || {
             let mut ready = false;
             let mut pending = (!command.is_empty()).then_some(command);
-            for request in open_receiver {
+            while let Some(request) = SERVICES.recv(&open_receiver) {
                 match request {
                     OpenRequest::Input(input) => pending = Some(input),
                     OpenRequest::Ready => ready = true,
@@ -285,11 +294,10 @@ impl MainWindow {
         });
 
         // Single application IPC
-        let socket_path = Path::new(
-            self.commands_path
-                .as_ref()
-                .expect("Cannot initialie the single application IPC"),
-        );
+        let socket_path = self.commands_path.as_deref().map(Path::new);
+        if socket_path.is_none() {
+            robust::report_error("on_init", &"chemin du canal d'instance unique absent");
+        }
 
         // Auto-update runs on the default feed unless disabled (--no-autoupdater); the endpoint is None then.
         let updater_enabled = self.autoupdater_endpoint.is_some();
@@ -298,20 +306,27 @@ impl MainWindow {
         let autoupdater_setup_file = self.autoupdater_setup_file.clone();
 
         if let Some(updater_endpoint) = autoupdater_endpoint {
-            thread::spawn(move || {
-                loop {
-                    if let Ok(msg) = updater_rx.recv() {
-                        if msg == "check_for_update" {
-                            break;
-                        }
+            SERVICES.spawn("autoupdater", move || {
+                let mut check_requested = false;
+                while let Some(msg) = SERVICES.recv(&updater_rx) {
+                    if msg == "check_for_update" {
+                        check_requested = true;
+                        break;
                     }
+                }
+                if !check_requested {
+                    return;
                 }
 
                 let mut ready_version = None;
                 loop {
-                    let current_version = env!("CARGO_PKG_VERSION")
-                        .parse()
-                        .expect("Should always be valid");
+                    let current_version = match env!("CARGO_PKG_VERSION").parse() {
+                        Ok(version) => version,
+                        Err(error) => {
+                            robust::report_error("autoupdater: version du shell illisible", &error);
+                            return;
+                        }
+                    };
 
                     let mut updater =
                         updater::Updater::new(current_version, &updater_endpoint, force_update);
@@ -320,7 +335,8 @@ impl MainWindow {
                         Ok(Some(update)) => {
                             println!("New version ready to install v{}", update.version);
                             ready_version = Some(update.version.clone());
-                            let mut autoupdater_setup_file = autoupdater_setup_file.lock().unwrap();
+                            let mut autoupdater_setup_file =
+                                robust::lock(&autoupdater_setup_file, "installeur prêt");
                             *autoupdater_setup_file = Some(update.clone());
                             web_tx_upd.send(RPCResponse::update_available()).ok();
                         }
@@ -328,21 +344,37 @@ impl MainWindow {
                         Err(e) => eprintln!("Failed to fetch updates: {e}"),
                     }
 
-                    thread::sleep(time::Duration::from_secs(UPDATE_INTERVAL));
+                    if !SERVICES.sleep(time::Duration::from_secs(UPDATE_INTERVAL)) {
+                        return;
+                    }
                 }
             }); // thread
         }
 
-        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+        if let Some(Ok(mut listener)) = socket_path.map(PipeServer::bind) {
             let focus_sender = self.focus_notice.sender();
-            thread::spawn(move || loop {
-                if let Ok(mut stream) = listener.accept() {
-                    let mut buf = vec![];
-                    stream.read_to_end(&mut buf).ok();
-                    if let Ok(s) = str::from_utf8(&buf) {
-                        focus_sender.notice();
-                        if !s.is_empty() {
-                            open_sender.send(OpenRequest::Input(s.to_string())).ok();
+            SERVICES.spawn("single-instance-pipe", move || {
+                // `accept` bloque : `on_exit` se connecte au canal pour le réveiller à la fermeture.
+                while !SERVICES.is_shutdown() {
+                    match listener.accept() {
+                        Ok(mut stream) => {
+                            if SERVICES.is_shutdown() {
+                                break;
+                            }
+                            let mut buf = vec![];
+                            stream.read_to_end(&mut buf).ok();
+                            if let Ok(s) = str::from_utf8(&buf) {
+                                focus_sender.notice();
+                                if !s.is_empty() {
+                                    open_sender.send(OpenRequest::Input(s.to_string())).ok();
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            robust::report_error("canal d'instance unique", &error);
+                            if !SERVICES.sleep(time::Duration::from_millis(500)) {
+                                break;
+                            }
                         }
                     }
                 }
@@ -350,11 +382,10 @@ impl MainWindow {
         }
 
         // Read message from player
-        thread::spawn(move || loop {
-            player_rx
-                .iter()
-                .map(|msg| web_tx_player.send(msg))
-                .for_each(drop);
+        SERVICES.spawn("player-relay", move || {
+            while let Some(msg) = SERVICES.recv(&player_rx) {
+                web_tx_player.send(msg).ok();
+            }
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
@@ -374,20 +405,18 @@ impl MainWindow {
         let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
 
-        thread::spawn(move || loop {
-            if let Some(msg) = web_rx
-                .recv()
-                .ok()
-                .and_then(|s| serde_json::from_str::<RPCRequest>(&s).ok())
+        // Une panique dans le traitement d'une commande ne doit pas couper les suivantes : chaque message est gardé.
+        let dispatch = move |msg: RPCRequest| {
             {
                 // Liste blanche (ipc.rs) : une commande refusée n'atteint aucun traitement.
                 if let Some(method) = msg.get_method() {
                     if let Err(reason) = check_command(method, msg.get_params()) {
                         eprintln!("Refused IPC command {method:?}: {reason}");
-                        continue;
+                        return;
                     }
                 }
-                let local_server_url = local_server_url.lock().unwrap().clone();
+                let local_server_url =
+                    robust::lock(&local_server_url, "URL du serveur local").clone();
                 match msg.get_method() {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
@@ -398,7 +427,10 @@ impl MainWindow {
                     // Téléchargements (ODY-201). Le sélecteur de dossier tourne sur le fil de l'interface ; les autres
                     // méthodes `download-*` passent une à une par le fil de downloads.rs.
                     Some("download-folder-pick") => {
-                        let mut pending = requested_download_folder.lock().unwrap();
+                        let mut pending = robust::lock(
+                            &requested_download_folder,
+                            "sélecteur de téléchargements",
+                        );
                         if *pending {
                             web_tx_web
                                 .send(RPCResponse::download_reply(
@@ -427,7 +459,8 @@ impl MainWindow {
                         if let Some(request) = msg.get_params().and_then(|params| {
                             serde_json::from_value::<CacheDirectoryRequest>(params.clone()).ok()
                         }) {
-                            let mut pending = requested_cache_directory.lock().unwrap();
+                            let mut pending =
+                                robust::lock(&requested_cache_directory, "sélecteur de cache");
                             let error = if local_server_url.as_deref()
                                 != Some(request.server_url.as_str())
                             {
@@ -547,7 +580,8 @@ impl MainWindow {
                             .and_then(|value| value.as_u64())
                             .filter(|scale| (75..=175).contains(scale))
                         {
-                            *requested_interface_scale.lock().unwrap() = Some(scale);
+                            *robust::lock(&requested_interface_scale, "échelle demandée") =
+                                Some(scale);
                             set_interface_scale_sender.notice();
                         }
                     }
@@ -557,7 +591,8 @@ impl MainWindow {
                             .and_then(|params| params.get("fullscreen"))
                             .and_then(|value| value.as_bool())
                         {
-                            *requested_fullscreen.lock().unwrap() = Some(fullscreen);
+                            *robust::lock(&requested_fullscreen, "plein écran demandé") =
+                                Some(fullscreen);
                             toggle_fullscreen_sender.notice();
                         }
                     }
@@ -567,12 +602,14 @@ impl MainWindow {
                             .and_then(|params| params.get("pip"))
                             .and_then(|value| value.as_bool())
                         {
-                            *requested_window_op.lock().unwrap() = Some(WindowRequest::Pip(pip));
+                            *robust::lock(&requested_window_op, "opération fenêtre") =
+                                Some(WindowRequest::Pip(pip));
                             window_op_sender.notice();
                         }
                     }
                     Some("win-drag") => {
-                        *requested_window_op.lock().unwrap() = Some(WindowRequest::Drag);
+                        *robust::lock(&requested_window_op, "opération fenêtre") =
+                            Some(WindowRequest::Drag);
                         window_op_sender.notice();
                     }
                     Some("quit") => quit_sender.notice(),
@@ -581,10 +618,10 @@ impl MainWindow {
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
                             .ok();
-                        if updater_enabled {
-                            updater_tx_web
-                                .send("check_for_update".to_owned())
-                                .expect("Failed to send value to updater channel");
+                        if updater_enabled
+                            && updater_tx_web.send("check_for_update".to_owned()).is_err()
+                        {
+                            robust::report_error("app-ready", &"canal de mise à jour fermé");
                         }
 
                         open_sender_web.send(OpenRequest::Ready).ok();
@@ -651,11 +688,15 @@ impl MainWindow {
                         }
                     }
                     Some(player_command) if player_command.starts_with("mpv-") => {
-                        let resp_json = serde_json::to_string(
-                            &msg.args.expect("Cannot have method without args"),
-                        )
-                        .expect("Cannot build response");
-                        player_tx.send(resp_json).ok();
+                        match msg.args.as_ref().map(serde_json::to_string) {
+                            Some(Ok(resp_json)) => {
+                                player_tx.send(resp_json).ok();
+                            }
+                            Some(Err(error)) => {
+                                robust::report_error("commande lecteur illisible", &error)
+                            }
+                            None => robust::report_error("commande lecteur", &"arguments absents"),
+                        }
                     }
                     Some(unknown) => {
                         eprintln!("Unsupported command {}({:?})", unknown, msg.get_params())
@@ -663,6 +704,21 @@ impl MainWindow {
                     None => {}
                 }
             } // recv
+        };
+        SERVICES.spawn("ipc-dispatch", move || {
+            while let Some(raw) = SERVICES.recv(&web_rx) {
+                let Ok(msg) = serde_json::from_str::<RPCRequest>(&raw) else {
+                    continue;
+                };
+                if let Err(payload) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(msg)))
+                {
+                    robust::report_error(
+                        "commande IPC arrêtée par une panique",
+                        &robust::panic_message(payload.as_ref()),
+                    );
+                }
+            }
         }); // thread
         let plan = shell_config::load().plan(self.webui_url.is_some());
         if plan.local_addon {
@@ -683,7 +739,7 @@ impl MainWindow {
         let Some(url) = self.remote_url.borrow().clone() else {
             return;
         };
-        *self.remote_probe_result.lock().unwrap() = None;
+        *robust::lock(&self.remote_probe_result, "sonde distante") = None;
         let result = self.remote_probe_result.clone();
         let sender = self.remote_probe_notice.sender();
         thread::spawn(move || {
@@ -693,7 +749,7 @@ impl MainWindow {
                 shell_config::PROBE_ATTEMPTS,
                 shell_config::PROBE_BACKOFF,
             );
-            *result.lock().unwrap() = Some(outcome);
+            *robust::lock(&result, "sonde distante") = Some(outcome);
             sender.notice();
         });
     }
@@ -701,7 +757,7 @@ impl MainWindow {
         let Some(url) = self.remote_url.borrow().clone() else {
             return;
         };
-        let outcome = self.remote_probe_result.lock().unwrap().take();
+        let outcome = robust::lock(&self.remote_probe_result, "sonde distante").take();
         let cause = match outcome {
             Some(Ok(())) => {
                 self.splash_screen.hide();
@@ -735,7 +791,7 @@ impl MainWindow {
         }
     }
     fn load_webui(&self, server_url: Option<&str>) {
-        *self.local_server_url.lock().unwrap() = server_url
+        *robust::lock(&self.local_server_url, "URL du serveur local") = server_url
             .filter(|server_url| {
                 Url::parse(server_url).is_ok_and(|url| {
                     matches!(url.scheme(), "http" | "https")
@@ -811,7 +867,7 @@ impl MainWindow {
             match event {
                 ServerEvent::Ready(endpoint) => self.load_webui(Some(&endpoint)),
                 ServerEvent::Failed(details) => {
-                    *self.local_server_url.lock().unwrap() = None;
+                    *robust::lock(&self.local_server_url, "URL du serveur local") = None;
                     if let Some(sender) = self.open_media_sender.borrow().as_ref() {
                         sender.send(OpenRequest::Reset).ok();
                     }
@@ -876,10 +932,7 @@ impl MainWindow {
     fn on_toggle_fullscreen_notice(&self) {
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
-                let target = self
-                    .requested_fullscreen
-                    .lock()
-                    .unwrap()
+                let target = robust::lock(&self.requested_fullscreen, "plein écran demandé")
                     .take()
                     .unwrap_or(!saved_style.full_screen);
                 if target {
@@ -896,7 +949,7 @@ impl MainWindow {
         self.transmit_window_visibility_change();
     }
     fn on_window_op_notice(&self) {
-        let request = self.requested_window_op.lock().unwrap().take();
+        let request = robust::lock(&self.requested_window_op, "opération fenêtre").take();
         let Some(hwnd) = self.window.handle.hwnd() else {
             return;
         };
@@ -918,7 +971,7 @@ impl MainWindow {
         }
     }
     fn on_set_interface_scale_notice(&self) {
-        let scale = self.requested_interface_scale.lock().unwrap().take();
+        let scale = robust::lock(&self.requested_interface_scale, "échelle demandée").take();
         if let Some(scale) = scale {
             self.webview.set_interface_scale(scale);
         }
@@ -927,7 +980,7 @@ impl MainWindow {
         self.splash_screen.hide();
     }
     fn on_cache_directory_notice(&self) {
-        let request = self.requested_cache_directory.lock().unwrap().clone();
+        let request = robust::lock(&self.requested_cache_directory, "sélecteur de cache").clone();
         let Some(request) = request else { return };
         if let Some(directory) = &request.directory {
             // An unplugged drive must not prevent choosing a different folder.
@@ -948,7 +1001,7 @@ impl MainWindow {
         } else {
             Ok(None)
         };
-        self.requested_cache_directory.lock().unwrap().take();
+        robust::lock(&self.requested_cache_directory, "sélecteur de cache").take();
         if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
             web_tx
                 .send(RPCResponse::cache_directory_selected(
@@ -959,7 +1012,10 @@ impl MainWindow {
         }
     }
     fn on_download_folder_notice(&self) {
-        let requested = std::mem::take(&mut *self.requested_download_folder.lock().unwrap());
+        let requested = std::mem::take(&mut *robust::lock(
+            &self.requested_download_folder,
+            "sélecteur de téléchargements",
+        ));
         if !requested {
             return;
         }
@@ -1044,6 +1100,16 @@ impl MainWindow {
     }
     fn on_exit(&self) {
         self.save_window_settings();
+        self.stop_threads();
         nwg::stop_thread_dispatch();
+    }
+    /// Arrêt propre des fils de service (lecteur, téléchargements, relais IPC...) : aucun fil orphelin à la fermeture.
+    fn stop_threads(&self) {
+        SERVICES.request_shutdown();
+        // Le fil du canal d'instance unique attend une connexion : on s'y connecte pour le réveiller.
+        if let Some(path) = &self.commands_path {
+            drop(PipeClient::connect(path));
+        }
+        SERVICES.join_all(SHUTDOWN_TIMEOUT);
     }
 }

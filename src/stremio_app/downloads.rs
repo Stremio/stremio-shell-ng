@@ -19,13 +19,17 @@ use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::OnceLock,
-    thread,
 };
 use winapi::{shared::ntdef::ULARGE_INTEGER, um::fileapi::GetDiskFreeSpaceExW};
 
-use crate::stremio_app::{ipc::RPCResponse, shell_config};
+use crate::stremio_app::{
+    ipc::RPCResponse,
+    robust::{self, SERVICES},
+    shell_config,
+};
 
 /// Taille maximale des données d'une écriture, une fois décodées.
 pub const MAX_WRITE_BYTES: usize = 16 * 1024 * 1024;
@@ -459,13 +463,8 @@ static WORKER: OnceLock<flume::Sender<Job>> = OnceLock::new();
 pub fn submit(method: &str, params: Value, reply: flume::Sender<String>) {
     let worker = WORKER.get_or_init(|| {
         let (tx, rx) = flume::unbounded::<Job>();
-        thread::spawn(move || {
-            for job in rx {
-                let payload = execute(&job.method, &job.params);
-                job.reply
-                    .send(RPCResponse::download_reply(&job.method, payload))
-                    .ok();
-            }
+        SERVICES.spawn("downloads-worker", move || {
+            run_worker(|| SERVICES.recv(&rx), execute);
         });
         tx
     });
@@ -476,6 +475,21 @@ pub fn submit(method: &str, params: Value, reply: flume::Sender<String>) {
             reply,
         })
         .ok();
+}
+
+/// Boucle du fil de travail : une panique pendant une méthode est attrapée et journalisée (lieu et fil seulement, jamais
+/// de donnée de l'utilisateur), la page reçoit l'erreur `io` pour cette méthode, puis le fil passe à la suivante.
+fn run_worker(mut next: impl FnMut() -> Option<Job>, exec: impl Fn(&str, &Value) -> Value) {
+    while let Some(job) = next() {
+        let payload = catch_unwind(AssertUnwindSafe(|| exec(&job.method, &job.params)))
+            .unwrap_or_else(|_| {
+                robust::report_error("downloads: méthode arrêtée par une panique", &job.method);
+                envelope(Err(IO))
+            });
+        job.reply
+            .send(RPCResponse::download_reply(&job.method, payload))
+            .ok();
+    }
 }
 
 /// Exécute une méthode et renvoie sa charge. Le dossier est résolu à chaque appel (le réglage peut changer).
@@ -937,5 +951,33 @@ mod tests {
         assert_eq!(wire["args"][1]["size"], 3);
         assert!(is_worker_method("download-finalize"));
         assert!(!is_worker_method("download-folder-pick"));
+    }
+
+    #[test]
+    fn a_panicking_method_is_answered_and_the_worker_keeps_going() {
+        let (tx, rx) = flume::unbounded::<Job>();
+        let (reply_tx, reply_rx) = flume::unbounded::<String>();
+        for method in ["download-size", "download-usage"] {
+            tx.send(Job {
+                method: method.to_owned(),
+                params: Value::Null,
+                reply: reply_tx.clone(),
+            })
+            .unwrap();
+        }
+        drop(tx);
+        run_worker(
+            || rx.recv().ok(),
+            |method, _| {
+                if method == "download-size" {
+                    panic!("boom");
+                }
+                json!({ "ok": true })
+            },
+        );
+        let first = reply_rx.recv().unwrap();
+        assert!(first.contains("\"code\":\"io\""), "{}", first);
+        let second = reply_rx.recv().unwrap();
+        assert!(second.contains("\"ok\":true"), "{}", second);
     }
 }

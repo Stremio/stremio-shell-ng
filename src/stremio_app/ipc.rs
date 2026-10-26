@@ -207,7 +207,14 @@ impl RPCResponse {
             }),
             ..Default::default()
         };
-        serde_json::to_string(&resp).expect("Cannot build response")
+        Self::serialize(&resp)
+    }
+    /// Sérialise une réponse ; en cas d'échec (jamais attendu) l'erreur est journalisée et un objet vide part à la place.
+    fn serialize(resp: &RPCResponse) -> String {
+        serde_json::to_string(resp).unwrap_or_else(|error| {
+            crate::stremio_app::robust::report_error("ipc: réponse non sérialisable", &error);
+            "{}".to_owned()
+        })
     }
     pub fn response_message(msg: Option<serde_json::Value>) -> String {
         let resp = RPCResponse {
@@ -217,7 +224,7 @@ impl RPCResponse {
             args: msg,
             ..Default::default()
         };
-        serde_json::to_string(&resp).expect("Cannot build response")
+        Self::serialize(&resp)
     }
     pub fn visibility_change(visible: bool, visibility: u32, is_full_screen: bool) -> String {
         Self::response_message(Some(json!(["win-visibility-changed" ,{

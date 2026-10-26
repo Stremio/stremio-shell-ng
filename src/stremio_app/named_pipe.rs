@@ -85,10 +85,10 @@ impl Read for PipeClient {
         if ok != 0 {
             Ok(bytes_read as usize)
         } else {
-            match io::Error::last_os_error().raw_os_error().map(|x| x as u32) {
+            let error = io::Error::last_os_error();
+            match error.raw_os_error().map(|x| x as u32) {
                 Some(winerror::ERROR_PIPE_NOT_CONNECTED) => Ok(0),
-                Some(err) => Err(io::Error::from_raw_os_error(err as i32)),
-                _ => panic!(""),
+                _ => Err(error),
             }
         }
     }
@@ -175,10 +175,10 @@ impl PipeServer {
         if result != 0 {
             Ok(())
         } else {
-            match io::Error::last_os_error().raw_os_error().map(|x| x as u32) {
+            let error = io::Error::last_os_error();
+            match error.raw_os_error().map(|x| x as u32) {
                 Some(winerror::ERROR_PIPE_CONNECTED) => Ok(()),
-                Some(err) => Err(io::Error::from_raw_os_error(err as i32)),
-                _ => panic!(""),
+                _ => Err(error),
             }
         }
     }
@@ -234,7 +234,7 @@ mod tests {
         let thread = thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
             let mut buf = [0; 5];
-            stream.read(&mut buf).unwrap();
+            stream.read_exact(&mut buf).unwrap();
             assert_eq!(&msg1[..], &buf[..]);
             stream.write_all(msg2).unwrap();
         });

@@ -1,5 +1,6 @@
 use crate::stremio_app::constants::{safe_url, SERVER_IPC_KEY};
 use crate::stremio_app::ipc;
+use crate::stremio_app::robust::{self, OrReport};
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
 use serde_json::json;
@@ -9,7 +10,6 @@ use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Instant;
 use urlencoding::decode;
 use webview2::{check_hresult, Controller};
@@ -34,7 +34,6 @@ pub struct WebView {
     pub controller: Rc<OnceCell<Controller>>,
     pub channel: ipc::Channel,
     notice: nwg::Notice,
-    compute: RefCell<Option<thread::JoinHandle<()>>>,
     message_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
@@ -109,9 +108,17 @@ impl PartialUi for WebView {
         let tx_fs = tx_web.clone();
         data.channel = RefCell::new(Some((tx, rx_web)));
 
-        let parent = parent.expect("No parent window").into();
+        let Some(parent) = parent.map(|parent| -> nwg::ControlHandle { parent.into() }) else {
+            return Err(nwg::NwgError::initialization(
+                "WebView: pas de fenêtre parente",
+            ));
+        };
 
-        let hwnd = parent.hwnd().expect("Cannot obtain window handle");
+        let Some(hwnd) = parent.hwnd() else {
+            return Err(nwg::NwgError::initialization(
+                "WebView: poignée de fenêtre introuvable",
+            ));
+        };
         nwg::Notice::builder()
             .parent(parent)
             .build(&mut data.notice)
@@ -123,9 +130,9 @@ impl PartialUi for WebView {
         let result = webview2::EnvironmentBuilder::new()
             .with_additional_browser_arguments(webview_flags)
             .build(move |env| {
-                env.expect("Cannot obtain webview environment")
+                env.or_report("WebView2: environnement indisponible")?
                     .create_controller(hwnd, move |controller| {
-                        let controller = controller.expect("Cannot obtain webview controller");
+                        let controller = controller.or_report("WebView2: contrôleur indisponible")?;
                         if let Ok(controller2) = controller.get_controller2() {
                             controller2
                                 .put_default_background_color(webview2_sys::Color {
@@ -140,8 +147,10 @@ impl PartialUi for WebView {
                         }
                     let webview = controller
                             .get_webview()
-                            .expect("Cannot obtain webview from controller");
-                    let settings = webview.get_settings().unwrap();
+                            .or_report("WebView2: vue indisponible")?;
+                    let settings = webview
+                        .get_settings()
+                        .or_report("WebView2: réglages indisponibles")?;
                     settings.put_is_status_bar_enabled(false).ok();
                     let dev_tools = devtools_allowed(
                         cfg!(debug_assertions),
@@ -202,25 +211,25 @@ impl PartialUi for WebView {
                             let msg = msg.try_get_web_message_as_string()?;
                             tx_web.send(msg).ok();
                             Ok(())
-                        }).expect("Cannot add web message received");
+                        }).or_report("WebView2: message web non branché")?;
                         webview.add_new_window_requested(move |_w, msg| {
                             if let Some(file) = msg.get_uri().ok().and_then(|str| {decode(str.as_str()).ok().map(Cow::into_owned)}) {
                                 tx_drag_drop.send(ipc::RPCResponse::response_message(Some(json!(["dragdrop" ,[file]])))).ok();
                                 msg.put_handled(true).ok();
                             }
                             Ok(())
-                        }).expect("Cannot add D&D handler");
+                        }).or_report("WebView2: glisser-déposer non branché")?;
                         webview.add_contains_full_screen_element_changed(move |wv| {
                             if let Ok(visibility) = wv.get_contains_full_screen_element() {
                                 tx_fs.send(ipc::RPCResponse::response_message(Some(json!(["win-set-visibility" , {"fullscreen": visibility}])))).ok();
                             }
                             Ok(())
-                        }).expect("Cannot add full screen element changed");
+                        }).or_report("WebView2: plein écran non branché")?;
 
                         webview.add_content_loading(move |wv, _| {
                             let key = std::env::var(SERVER_IPC_KEY).unwrap_or_default();
                             wv.execute_script(&server_ipc_key_script(&key), |_| Ok(()))
-                                .expect("Cannot add SERVER_IPC_KEY to webview");
+                                .or_report("WebView2: clé IPC non injectée")?;
 
                             wv.execute_script(r##"
                             window.addEventListener('contextmenu', event => {
@@ -245,9 +254,9 @@ impl PartialUi for WebView {
                                 }}catch(e){}
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
-                            "##, |_| Ok(())).expect("Cannot add script to webview");
+                            "##, |_| Ok(())).or_report("WebView2: script du shell non injecté")?;
                             Ok(())
-                        }).expect("Cannot add content loading");
+                        }).or_report("WebView2: chargement de contenu non branché")?;
 
                         WebView::resize_to_window_bounds(Some(&controller), Some(hwnd));
                         controller.put_is_visible(true).ok();
@@ -289,12 +298,15 @@ impl PartialUi for WebView {
 
                             Ok(())
                         })
-                        .unwrap();
+                        .or_report("WebView2: raccourcis clavier non branchés")?;
 
                         let navigation = endpoint.borrow().clone();
-                        controller_clone
-                            .set(controller)
-                            .expect("Cannot update the controller");
+                        if controller_clone.set(controller).is_err() {
+                            robust::report_error(
+                                "WebView2",
+                                &"contrôleur déjà enregistré, le nouveau est ignoré",
+                            );
+                        }
                         if let Some(endpoint) = navigation {
                             if WebView::navigate_webview(&webview, &endpoint).is_err() {
                                 navigation_tx.send(ipc::RPCResponse::response_message(Some(json!(["app-error", format!("Cannot load WEB UI at '{}'", &endpoint)])))).ok();
@@ -313,13 +325,12 @@ impl PartialUi for WebView {
 
         let sender = data.notice.sender();
         let message = data.message_queue.clone();
-        *data.compute.borrow_mut() = Some(thread::spawn(move || loop {
-            if let Ok(msg) = rx.recv() {
-                let mut message = message.lock().unwrap();
-                message.push_back(msg);
+        robust::SERVICES.spawn("webview-messages", move || {
+            while let Some(msg) = robust::SERVICES.recv(&rx) {
+                robust::lock(&message, "file des messages WebView").push_back(msg);
                 sender.notice();
             }
-        }));
+        });
 
         // handler ids equal or smaller than 0xFFFF are reserved by NWG
         let handler_id = 0x10000;
@@ -362,8 +373,17 @@ impl PartialUi for WebView {
         if evt == E::OnNotice && handle == self.notice.handle {
             let message_queue = self.message_queue.clone();
             if let Some(controller) = self.controller.get() {
-                let webview = controller.get_webview().expect("Cannot get vebview");
-                let mut message_queue = message_queue.lock().unwrap();
+                let webview = match controller.get_webview() {
+                    Ok(webview) => webview,
+                    Err(error) => {
+                        robust::report_error(
+                            "WebView2: vue indisponible pour les messages",
+                            &error,
+                        );
+                        return;
+                    }
+                };
+                let mut message_queue = robust::lock(&message_queue, "file des messages WebView");
                 for msg in message_queue.drain(..) {
                     webview.post_web_message_as_string(msg.as_str()).ok();
                 }
