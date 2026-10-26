@@ -2,7 +2,7 @@
 set mypath=%~dp0
 
 :: Compile the main executable
-if not exist "%mypath%..\target\release\stremio-shell-ng.exe" (
+if not exist "%mypath%..\target\release\laststream-shell-ng.exe" (
     cargo build --release
 ) else (
     echo Main executable is already built

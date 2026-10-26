@@ -1,5 +1,5 @@
 use super::process::{ServerEvent, ServerProcess};
-use crate::stremio_app::constants::STREMIO_SERVER_DEV_MODE;
+use crate::laststream_app::constants::LASTSTREAM_SERVER_DEV_MODE;
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
     env, fs,
@@ -13,12 +13,12 @@ use winapi::um::winbase::CREATE_NO_WINDOW;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
-pub struct StremioServer {
+pub struct LaststreamServer {
     pub notice: nwg::Notice,
     process: Option<ServerProcess>,
 }
 
-impl StremioServer {
+impl LaststreamServer {
     pub fn development(&self) -> bool {
         self.process.is_none()
     }
@@ -75,7 +75,7 @@ fn server_command() -> Result<Command, String> {
     Ok(command)
 }
 
-impl PartialUi for StremioServer {
+impl PartialUi for LaststreamServer {
     fn build_partial<W: Into<nwg::ControlHandle>>(
         data: &mut Self,
         parent: Option<W>,
@@ -85,7 +85,7 @@ impl PartialUi for StremioServer {
             .parent(parent)
             .build(&mut data.notice)?;
 
-        if env::var(STREMIO_SERVER_DEV_MODE).as_deref() != Ok("true") {
+        if env::var(LASTSTREAM_SERVER_DEV_MODE).as_deref() != Ok("true") {
             let sender = data.notice.sender();
             data.process = Some(ServerProcess::new(
                 server_command,

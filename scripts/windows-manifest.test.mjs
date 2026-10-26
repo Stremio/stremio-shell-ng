@@ -8,7 +8,7 @@ const SHA = 'a'.repeat(64);
 
 test('parseInstallerName accepte X.Y.Z et refuse le reste', () => {
   assert.equal(parseInstallerName('Laststream-Setup-1.0.17.exe'), '1.0.17');
-  assert.throws(() => parseInstallerName('Stremio-Setup-1.0.17.exe'));
+  assert.throws(() => parseInstallerName('Autre-Setup-1.0.17.exe'));
   assert.throws(() => parseInstallerName('Laststream-Setup-1.0.exe'));
   assert.throws(() => parseInstallerName('../Laststream-Setup-1.0.17.exe'));
 });
@@ -46,8 +46,8 @@ test('buildManifest refuse sha256, taille ou base invalides', () => {
   assert.throws(() => buildManifest({ ...ok, baseUrl: 'http://exemple.test' }));
 });
 
-const TOML = '[package]\nname = "stremio-shell-ng"\nversion = "1.0.17"\nedition = "2018"\n\n[dependencies]\nversion = "9"\n';
-const LOCK = (v) => `[[package]]\nname = "autre"\nversion = "9.9.9"\n\n[[package]]\nname = "stremio-shell-ng"\nversion = "${v}"\n`;
+const TOML = '[package]\nname = "laststream-shell-ng"\nversion = "1.0.17"\nedition = "2018"\n\n[dependencies]\nversion = "9"\n';
+const LOCK = (v) => `[[package]]\nname = "autre"\nversion = "9.9.9"\n\n[[package]]\nname = "laststream-shell-ng"\nversion = "${v}"\n`;
 const ISS = (v) => `#define MyAppName "Laststream"\n#define MyAppVersion "${v}"\n`;
 
 test('lecture des versions Cargo.toml et Laststream.iss', () => {

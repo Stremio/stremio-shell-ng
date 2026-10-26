@@ -1,4 +1,4 @@
-//! Pont HTTP natif « addon stream » : interroge depuis l'appareil des addons Stremio que Cloudflare bloque côté serveur.
+//! Pont HTTP natif « addon stream » : interroge depuis l'appareil des addons de flux que Cloudflare bloque côté serveur.
 //! Catégorie strictement bornée : GET https:443 uniquement, chemin `.../stream/<type>/<id>.json` ou `.../manifest.json`,
 //! hôte nominatif (pas d'IP littérale) qui ne résout que vers des adresses publiques (vérifié après résolution DNS,
 //! puis connexion épinglée sur ces adresses), sans identifiants, réponse <= 5 Mo, 10 s au total, seul `Accept` est

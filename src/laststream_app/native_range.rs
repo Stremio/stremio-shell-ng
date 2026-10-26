@@ -32,9 +32,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use crate::stremio_app::addon_http::{public_named_url, resolve_public_checked, system_resolver};
-use crate::stremio_app::ipc::RPCResponse;
-use crate::stremio_app::native_http::{
+use crate::laststream_app::addon_http::{
+    public_named_url, resolve_public_checked, system_resolver,
+};
+use crate::laststream_app::ipc::RPCResponse;
+use crate::laststream_app::native_http::{
     debrid_resolution_ok, host_allowed, parse_allowed_url, RESPONSE_HEADERS,
 };
 use std::net::{IpAddr, SocketAddr};

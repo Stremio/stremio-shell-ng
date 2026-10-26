@@ -1,4 +1,4 @@
-use crate::stremio_app::constants::{SRV_BUFFER_SIZE, SRV_LOG_SIZE};
+use crate::laststream_app::constants::{SRV_BUFFER_SIZE, SRV_LOG_SIZE};
 use flume::{Receiver, RecvTimeoutError, Sender};
 use std::{
     collections::VecDeque,

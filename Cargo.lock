@@ -862,6 +862,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "laststream-shell-ng"
+version = "1.0.24"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bitflags 2.4.2",
+ "chrono",
+ "clap",
+ "dirs",
+ "flume",
+ "libmpv2",
+ "libmpv2-sys",
+ "native-windows-derive",
+ "native-windows-gui",
+ "once_cell",
+ "open",
+ "parse-display",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_test",
+ "sha2",
+ "url",
+ "urlencoding",
+ "uuid",
+ "webview2",
+ "webview2-sys",
+ "whoami",
+ "winapi",
+ "winreg",
+ "winres",
+ "zip-extract",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1605,42 +1641,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "stremio-shell-ng"
-version = "1.0.24"
-dependencies = [
- "anyhow",
- "base64",
- "bitflags 2.4.2",
- "chrono",
- "clap",
- "dirs",
- "flume",
- "libmpv2",
- "libmpv2-sys",
- "native-windows-derive",
- "native-windows-gui",
- "once_cell",
- "open",
- "parse-display",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "serde_test",
- "sha2",
- "url",
- "urlencoding",
- "uuid",
- "webview2",
- "webview2-sys",
- "whoami",
- "winapi",
- "winreg",
- "winres",
- "zip-extract",
 ]
 
 [[package]]

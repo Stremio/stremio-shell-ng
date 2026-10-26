@@ -2,7 +2,7 @@
 //   node scripts/windows-manifest.mjs check
 //   node scripts/windows-manifest.mjs build <installeur.exe> [--notes "texte"] [--out latest.json] [--base-url URL]
 // Le schema reprend celui du latest.json Android (versionName, versionCode, url, sha256, size, notes) et ajoute
-// `version`, `versionDesc` et `files[]`, que lit deja l'updater natif (src/stremio_app/updater.rs) : le meme fichier
+// `version`, `versionDesc` et `files[]`, que lit deja l'updater natif (src/laststream_app/updater.rs) : le meme fichier
 // sert d'endpoint et de descripteur. Aucun secret ni reseau : le script ne fait que lire et hacher des fichiers.
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync, statSync, writeFileSync } from 'node:fs';

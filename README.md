@@ -1,6 +1,6 @@
 ## Laststream : coque Windows
 
-A Windows-only shell using WebView2 and MPV (le crate garde le nom interne `stremio-shell-ng` ;
+A Windows-only shell using WebView2 and MPV (crate `laststream-shell-ng` ;
 l'exécutable livré s'appelle `laststream.exe`)
 
 Goals:
@@ -8,7 +8,7 @@ Goals:
 * Reliability
 * Easy to ship
 
-In all three, this architecture excels the [Qt-based shell](https://github.com/Stremio/stremio-shell): it is about 2-5x more efficient depending on the use case, as it allows MPV to render directly in the window through it's optimal video output rather than using libmpv to integrate with Qt.
+In all three, this architecture excels a Qt-based shell: it is about 2-5x more efficient depending on the use case, as it allows MPV to render directly in the window through it's optimal video output rather than using libmpv to integrate with Qt.
 
 This is due to Qt having a complex rendering pipeline involving ANGLE and multiple levels of composing and drawing to textures, which inhibits full HW acceleration.
 
@@ -48,3 +48,7 @@ L'installeur se construit en local (le dossier `dist\laststream-desktop` contien
 Le flux (`scripts/windows-manifest.mjs`) suit le schéma du `latest.json` Android (`versionName`, `versionCode`, `url`, `sha256`, `size`, `notes`) et ajoute `version`, `publishedAt`, `versionDesc` et `files[]`, le format que lit déjà l'updater natif (`--autoupdater-endpoint`) : le même fichier est l'endpoint et le descripteur. `versionCode` vaut `major*1000000 + minor*1000 + patch`. L'updater natif compare le SHA-256 au fichier téléchargé avant de lancer l'installeur ; il lit ce flux par défaut (ODY-258) : `--autoupdater-endpoint <URL>` le remplace, `--no-autoupdater` le désactive (aucun appel réseau), comme `--development`. Si une version plus récente est trouvée, l'installeur est téléchargé puis vérifié ; l'installation silencieuse (`/SILENT`) ne démarre qu'après le clic de l'utilisateur sur la notification de mise à jour. L'installeur est écrit dans un fichier `.part` puis renommé après la vérification, et une version déjà téléchargée n'est pas retéléchargée. Le SHA-256 vient du même flux que l'URL : il protège de la corruption, pas d'une compromission du Worker ou du bucket (une signature du flux reste à faire).
 
 Signature : aucun certificat de signature de code n'est utilisé à ce jour, SmartScreen peut donc alerter au premier lancement. L'intégrité repose sur le SHA-256 du flux. Pour signer, définir l'outil `laststreamsign` dans Inno Setup puis compiler avec `/DSIGN`.
+
+## Mentions de l'amont
+
+Les références restantes à l'ancien projet amont sont listées et justifiées dans [docs/stremio-mentions.md](docs/stremio-mentions.md).

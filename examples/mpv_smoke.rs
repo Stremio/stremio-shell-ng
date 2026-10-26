@@ -1,5 +1,5 @@
 //! Headless libmpv smoke test: `cargo run --example mpv_smoke -- <media.mkv>`
-//! Mirrors create_mpv() in src/stremio_app/stremio_player/player.rs, minus the window
+//! Mirrors create_mpv() in src/laststream_app/laststream_player/player.rs, minus the window
 //! (`wid`) and GPU options, with vo=null / ao=null. Which libmpv-2.dll is used is decided
 //! by PATH (prepend the DLL directory to test another build).
 use libmpv2::{events::Event, Mpv};

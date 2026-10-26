@@ -11,7 +11,7 @@ use winreg::{
     RegKey,
 };
 
-use crate::stremio_app::constants::APP_NAME;
+use crate::laststream_app::constants::APP_NAME;
 
 const M3U_DATA_URI_PREFIX: &str = "data:application/octet-stream;charset=utf-8;base64,";
 const APP_PATHS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths";

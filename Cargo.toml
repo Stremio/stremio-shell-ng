@@ -1,5 +1,5 @@
 [package]
-name = "stremio-shell-ng"
+name = "laststream-shell-ng"
 version = "1.0.24"
 edition = "2018"
 

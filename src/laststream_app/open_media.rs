@@ -80,7 +80,8 @@ mod tests {
 
     #[test]
     fn opens_torrent_bytes_from_an_encoded_file_url() {
-        let directory = std::env::temp_dir().join(format!("stremio-open-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("laststream-open-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("movie #1 % & 漢字.TORRENT");
         let data = b"d4:infod4:name5:movieee";
@@ -101,7 +102,7 @@ mod tests {
         for input in [
             "https://example.com/movie.mp4",
             "javascript:alert(1)",
-            "stremio://example.com/manifest.json",
+            "ftp://example.com/manifest.json",
             "file:///tmp/movie.mkv",
         ] {
             assert!(open(input).is_err());

@@ -1,6 +1,6 @@
-use crate::stremio_app::constants::{safe_url, SERVER_IPC_KEY};
-use crate::stremio_app::ipc;
-use crate::stremio_app::robust::{self, OrReport};
+use crate::laststream_app::constants::{safe_url, SERVER_IPC_KEY};
+use crate::laststream_app::ipc;
+use crate::laststream_app::robust::{self, OrReport};
 use native_windows_gui::{self as nwg, PartialUi};
 use once_cell::unsync::OnceCell;
 use serde_json::json;
@@ -417,7 +417,7 @@ fn server_ipc_key_script(key: &str) -> String {
         .replace('>', "\\u003e")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    format!("window.stremio_server_ipc_key = {literal};")
+    format!("window.laststream_server_ipc_key = {literal};")
 }
 
 /// Les outils de développement sont toujours disponibles dans un build de débogage ; en release, seulement
@@ -429,7 +429,7 @@ fn devtools_allowed(debug_build: bool, devtools_flag: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stremio_app::shell_config::PUBLIC_URL;
+    use crate::laststream_app::shell_config::PUBLIC_URL;
 
     fn trusted(endpoint: &str) -> Option<url::Origin> {
         trusted_origin(&RefCell::new(Some(endpoint.to_owned())))
@@ -467,9 +467,9 @@ mod tests {
         let key = "a\"b</script>\\c\u{2028}";
         let script = server_ipc_key_script(key);
         let literal = script
-            .strip_prefix("window.stremio_server_ipc_key = ")
+            .strip_prefix("window.laststream_server_ipc_key = ")
             .and_then(|rest| rest.strip_suffix(';'))
-            .expect("the key is assigned to window.stremio_server_ipc_key");
+            .expect("the key is assigned to window.laststream_server_ipc_key");
         assert!(!script.contains("</script"));
         let decoded: String =
             serde_json::from_str(literal).expect("the assigned value is a JSON string");

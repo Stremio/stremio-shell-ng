@@ -37,8 +37,8 @@ pub struct StartupPlan {
 }
 
 impl Target {
-    /// `explicit_webui`: the user passed `--webui-url`/`--development`/`--staging`; the former
-    /// Stremio web flow (and its streaming server) is then kept as is.
+    /// `explicit_webui`: the user passed `--webui-url` or `--development`; the page is then loaded
+    /// as given, with no local addon, and the streaming server is kept.
     pub fn plan(&self, explicit_webui: bool) -> StartupPlan {
         if explicit_webui {
             return StartupPlan {

@@ -1,4 +1,4 @@
-use crate::stremio_app::constants::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
+use crate::laststream_app::constants::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
 use native_windows_derive::NwgPartial;
 use native_windows_gui as nwg;
 

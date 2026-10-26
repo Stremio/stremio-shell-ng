@@ -1,4 +1,4 @@
-use crate::stremio_app::stremio_player::communication::{
+use crate::laststream_app::laststream_player::communication::{
     BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, IntProp, PlayerEnded, PlayerProprChange,
     PlayerResponse, PropKey, PropVal,
 };

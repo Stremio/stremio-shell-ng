@@ -1,13 +1,13 @@
-//! Local Laststream service (`lastaddon.cjs`), run beside the Stremio streaming server.
+//! Local Laststream service (`lastaddon.cjs`), run beside the local streaming server (`server.js`).
 //!
 //! The service is started with the shell, must print `LASTADDON_READY port=<n>` on stdout
 //! within `READY_TIMEOUT`, is restarted once if it crashes afterwards, and is killed with the
 //! shell through a job object.
 
-use crate::stremio_app::lastaddon_import::{import_developer_data, import_source};
-use crate::stremio_app::{
-    constants::{SRV_BUFFER_SIZE, SRV_LOG_SIZE, STREMIO_SERVER_DEV_MODE},
-    stremio_server::job::{self, ChildJob},
+use crate::laststream_app::lastaddon_import::{import_developer_data, import_source};
+use crate::laststream_app::{
+    constants::{LASTSTREAM_SERVER_DEV_MODE, SRV_BUFFER_SIZE, SRV_LOG_SIZE},
+    laststream_server::job::{self, ChildJob},
 };
 use flume::{Receiver, Sender, TryRecvError};
 use native_windows_gui::{self as nwg, PartialUi};
@@ -96,7 +96,7 @@ impl PartialUi for LastAddon {
             .parent(parent)
             .build(&mut data.notice)?;
 
-        if env::var(STREMIO_SERVER_DEV_MODE).as_deref() != Ok("true") {
+        if env::var(LASTSTREAM_SERVER_DEV_MODE).as_deref() != Ok("true") {
             let sender = data.notice.sender();
             data.process = Some(AddonProcess::with_probe(
                 service_command,

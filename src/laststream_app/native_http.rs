@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::net::IpAddr;
 use std::time::Duration;
 
-use crate::stremio_app::addon_http::{ip_is_public, system_resolver};
+use crate::laststream_app::addon_http::{ip_is_public, system_resolver};
 
 /// Hôtes autorisés : API AllDebrid et TorBox, plus leurs domaines de fichiers (suffixes).
 const ALLOWED_HOSTS: &[&str] = &["api.alldebrid.com", "api.torbox.app"];
@@ -318,7 +318,7 @@ mod tests {
             debrid_resolution_ok(host, &ips(&["198.18.0.5", "10.0.0.1"])),
             Err("host_not_allowed")
         );
-        assert!(!crate::stremio_app::addon_http::ip_is_public(
+        assert!(!crate::laststream_app::addon_http::ip_is_public(
             "198.18.0.5".parse().unwrap()
         ));
         // Bloqueur DNS : adresse nulle = problème de réseau, pas un lien mort.

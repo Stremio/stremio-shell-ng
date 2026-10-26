@@ -7,11 +7,9 @@ use whoami::username;
 
 use clap::Parser;
 use native_windows_gui::{self as nwg, NativeUi};
-mod stremio_app;
-use crate::stremio_app::{
-    constants::{
-        DEV_ENDPOINT, IPC_PATH, SERVER_IPC_KEY, STA_ENDPOINT, STREMIO_SERVER_DEV_MODE, WEB_ENDPOINT,
-    },
+mod laststream_app;
+use crate::laststream_app::{
+    constants::{DEV_ENDPOINT, IPC_PATH, LASTSTREAM_SERVER_DEV_MODE, SERVER_IPC_KEY},
     MainWindow, PipeClient,
 };
 
@@ -34,8 +32,6 @@ struct Opt {
     devtools: bool,
     #[clap(long, help = "Disable the server and load the WebUI from localhost")]
     development: bool,
-    #[clap(long, help = "Shortcut for --webui-url=https://staging.strem.io/")]
-    staging: bool,
     #[clap(
         long,
         help = "Override the WebUI URL (default: the Laststream app served by the local service)"
@@ -61,6 +57,12 @@ struct Opt {
     server_ipc_key: String,
 }
 
+/// `--webui-url` is loaded as given. Without it, `--development` loads the local dev server.
+/// `None` keeps the Laststream app served by the local service.
+fn resolve_webui_url(webui_url: Option<String>, development: bool) -> Option<String> {
+    webui_url.or_else(|| development.then(|| DEV_ENDPOINT.to_string()))
+}
+
 fn main() {
     nwg::enable_visual_styles();
 
@@ -78,7 +80,7 @@ fn main() {
     let command = opt
         .command
         .filter(|command| !command.is_empty())
-        .map(stremio_app::open_media::normalize)
+        .map(laststream_app::open_media::normalize)
         .unwrap_or_default();
 
     // Single application IPC
@@ -102,17 +104,11 @@ fn main() {
     // END IPC
 
     std::env::set_var(
-        STREMIO_SERVER_DEV_MODE,
+        LASTSTREAM_SERVER_DEV_MODE,
         if opt.development { "true" } else { "false" },
     );
 
-    // None keeps the Laststream app served by the local service.
-    let webui_url = match opt.webui_url.as_deref() {
-        Some(url) if url != WEB_ENDPOINT => Some(url.to_string()),
-        _ if opt.development => Some(DEV_ENDPOINT.to_string()),
-        _ if opt.staging => Some(STA_ENDPOINT.to_string()),
-        explicit => explicit.map(str::to_string),
-    };
+    let webui_url = resolve_webui_url(opt.webui_url, opt.development);
 
     nwg::init().expect("Failed to init Native Windows GUI");
     let _app = MainWindow::build_ui(MainWindow {
@@ -122,7 +118,7 @@ fn main() {
         no_splash: opt.no_splash,
         dev_tools: opt.development || opt.devtools,
         start_hidden: opt.start_hidden,
-        autoupdater_endpoint: stremio_app::updater::resolve_endpoint(
+        autoupdater_endpoint: laststream_app::updater::resolve_endpoint(
             opt.autoupdater_endpoint,
             opt.no_autoupdater || opt.development,
         ),
@@ -150,5 +146,31 @@ mod tests {
                 .devtools
         );
         assert!(!Opt::try_parse_from(["laststream"]).unwrap().devtools);
+    }
+
+    #[test]
+    fn webui_url_option_is_loaded_as_given() {
+        let url = "https://example.com/";
+        assert_eq!(
+            resolve_webui_url(Some(url.to_string()), false),
+            Some(url.to_string())
+        );
+        assert_eq!(
+            resolve_webui_url(Some(url.to_string()), true),
+            Some(url.to_string())
+        );
+    }
+
+    #[test]
+    fn development_loads_the_dev_server_without_a_webui_url() {
+        assert_eq!(
+            resolve_webui_url(None, true),
+            Some(DEV_ENDPOINT.to_string())
+        );
+    }
+
+    #[test]
+    fn without_options_the_local_service_serves_the_webui() {
+        assert_eq!(resolve_webui_url(None, false), None);
     }
 }

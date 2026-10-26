@@ -25,7 +25,7 @@ use std::{
 };
 use winapi::{shared::ntdef::ULARGE_INTEGER, um::fileapi::GetDiskFreeSpaceExW};
 
-use crate::stremio_app::{
+use crate::laststream_app::{
     ipc::RPCResponse,
     robust::{self, SERVICES},
     shell_config,
@@ -864,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn default_folder_is_videos_laststream_never_stremio() {
+    fn default_folder_is_videos_laststream() {
         let videos = PathBuf::from(r"C:\Users\x\Videos");
         assert_eq!(
             default_download_dir(Some(videos.clone()), None),
@@ -876,11 +876,6 @@ mod tests {
             Some(home.join("Videos").join("Laststream"))
         );
         assert_eq!(default_download_dir(None, None), None);
-        let text = default_download_dir(Some(videos), None)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        assert!(!text.contains("Stremio"));
     }
 
     #[test]

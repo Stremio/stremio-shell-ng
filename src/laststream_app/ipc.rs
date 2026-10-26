@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::cell::RefCell;
 
-use crate::stremio_app::gpu_video_processing;
+use crate::laststream_app::gpu_video_processing;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -61,7 +61,7 @@ pub enum ParamKind {
 /// Seule source de vérité : une méthode absente de cette liste est refusée et journalisée
 /// avant tout traitement (`app.rs`). Une méthode présente doit avoir son traitement dans
 /// `app.rs`. Ajouter une commande = la déclarer ici avec sa forme, puis la traiter.
-/// Les `download-*` (`downloads::is_worker_method`) et `mpv-*` (`stremio_player`) sont listés un à un.
+/// Les `download-*` (`downloads::is_worker_method`) et `mpv-*` (`laststream_player`) sont listés un à un.
 pub const ALLOWED_COMMANDS: &[(&str, ParamKind)] = &[
     // Fenêtre et interface
     ("win-set-interface-scale", ParamKind::Object),
@@ -212,7 +212,7 @@ impl RPCResponse {
     /// Sérialise une réponse ; en cas d'échec (jamais attendu) l'erreur est journalisée et un objet vide part à la place.
     fn serialize(resp: &RPCResponse) -> String {
         serde_json::to_string(resp).unwrap_or_else(|error| {
-            crate::stremio_app::robust::report_error("ipc: réponse non sérialisable", &error);
+            crate::laststream_app::robust::report_error("ipc: réponse non sérialisable", &error);
             "{}".to_owned()
         })
     }

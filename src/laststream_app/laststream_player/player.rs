@@ -1,9 +1,9 @@
-use crate::stremio_app::gpu_video_processing;
-use crate::stremio_app::ipc;
-use crate::stremio_app::robust::{
+use crate::laststream_app::gpu_video_processing;
+use crate::laststream_app::ipc;
+use crate::laststream_app::robust::{
     join_with_timeout, lock, panic_message, report_error, OrReport, RestartPolicy, SERVICES,
 };
-use crate::stremio_app::RPCResponse;
+use crate::laststream_app::RPCResponse;
 use flume::{Receiver, Sender};
 use libmpv2::{
     events::{Event, PropertyData},
@@ -42,7 +42,7 @@ use winapi::um::{
     },
 };
 
-use crate::stremio_app::stremio_player::{
+use crate::laststream_app::laststream_player::{
     CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerEvent, PlayerProprChange, PlayerResponse,
     PropKey, PropVal,
 };
@@ -1319,8 +1319,10 @@ fn run_message_loop(
 #[cfg(test)]
 mod tests {
     use super::{default_buffer_options, ResumeState, VideoReadyState};
-    use crate::stremio_app::stremio_player::communication::{BoolProp, FpProp};
-    use crate::stremio_app::stremio_player::{CmdVal, InMsg, InMsgArgs, InMsgFn, PropKey, PropVal};
+    use crate::laststream_app::laststream_player::communication::{BoolProp, FpProp};
+    use crate::laststream_app::laststream_player::{
+        CmdVal, InMsg, InMsgArgs, InMsgFn, PropKey, PropVal,
+    };
     use std::convert::TryFrom;
 
     fn set_prop(key: PropKey, value: PropVal) -> InMsg {

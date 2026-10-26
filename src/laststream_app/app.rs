@@ -24,19 +24,16 @@ use winapi::{
     },
 };
 
-use crate::stremio_app::{
-    constants::{
-        safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_INTERVAL, WEB_ENDPOINT,
-        WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
-    },
+use crate::laststream_app::{
+    constants::{safe_url, APP_NAME, UPDATE_INTERVAL, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH},
     downloads,
     ipc::{check_command, CacheDirectoryRequest, RPCRequest, RPCResponse},
     lastaddon::{AddonEvent, LastAddon},
+    laststream_player::Player,
+    laststream_webview::WebView,
     robust::{self, SERVICES},
     shell_config,
     splash::SplashImage,
-    stremio_player::Player,
-    stremio_wevbiew::WebView,
     systray::SystemTray,
     updater,
     window_helper::{WindowStyle, PIP_ACTIVE},
@@ -44,7 +41,7 @@ use crate::stremio_app::{
     PipeClient, PipeServer,
 };
 
-use super::stremio_server::{ServerEvent, StremioServer};
+use super::laststream_server::{LaststreamServer, ServerEvent};
 
 /// Temps total laissé aux fils de service pour s'arrêter à la fermeture.
 const SHUTDOWN_TIMEOUT: time::Duration = time::Duration::from_secs(3);
@@ -114,7 +111,7 @@ pub struct MainWindow {
     pub splash_screen: SplashImage,
     #[nwg_partial(parent: window)]
     #[nwg_events((notice, OnNotice): [Self::on_server_notice])]
-    pub server: StremioServer,
+    pub server: LaststreamServer,
     #[nwg_partial(parent: window)]
     #[nwg_events((notice, OnNotice): [Self::on_addon_notice])]
     pub addon: LastAddon,
@@ -487,13 +484,13 @@ impl MainWindow {
                     Some("native-http") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
                             serde_json::from_value::<
-                                crate::stremio_app::native_http::NativeHttpRequest,
+                                crate::laststream_app::native_http::NativeHttpRequest,
                             >(params.clone())
                             .ok()
                         }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
-                                let payload = crate::stremio_app::native_http::run(&request);
+                                let payload = crate::laststream_app::native_http::run(&request);
                                 reply_tx
                                     .send(RPCResponse::native_http_response(payload))
                                     .ok();
@@ -505,18 +502,19 @@ impl MainWindow {
                         let params = msg.get_params();
                         match params.and_then(|params| {
                             serde_json::from_value::<
-                                crate::stremio_app::native_range::NativeRangeRequest,
+                                crate::laststream_app::native_range::NativeRangeRequest,
                             >(params.clone())
                             .ok()
                         }) {
-                            Some(request) => {
-                                crate::stremio_app::native_range::start(request, web_tx_web.clone())
-                            }
+                            Some(request) => crate::laststream_app::native_range::start(
+                                request,
+                                web_tx_web.clone(),
+                            ),
                             // Requête illisible : réponse finale quand même, avec l'identifiant s'il existe (jamais de silence).
                             None => {
                                 web_tx_web
                                     .send(RPCResponse::native_range_response(
-                                        crate::stremio_app::native_range::bad_request(params),
+                                        crate::laststream_app::native_range::bad_request(params),
                                     ))
                                     .ok();
                             }
@@ -525,17 +523,17 @@ impl MainWindow {
                     Some("native-range-cancel") => {
                         if let Some(cancel) = msg.get_params().and_then(|params| {
                             serde_json::from_value::<
-                                crate::stremio_app::native_range::NativeRangeCancel,
+                                crate::laststream_app::native_range::NativeRangeCancel,
                             >(params.clone())
                             .ok()
                         }) {
-                            crate::stremio_app::native_range::cancel(cancel.id);
+                            crate::laststream_app::native_range::cancel(cancel.id);
                         }
                     }
                     Some("native-range-caps") => {
                         web_tx_web
                             .send(RPCResponse::native_range_caps(
-                                crate::stremio_app::native_range::caps(),
+                                crate::laststream_app::native_range::caps(),
                             ))
                             .ok();
                     }
@@ -543,13 +541,13 @@ impl MainWindow {
                     Some("native-addon-http") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
                             serde_json::from_value::<
-                                    crate::stremio_app::addon_http::AddonHttpRequest,
-                                >(params.clone())
-                                .ok()
+                                crate::laststream_app::addon_http::AddonHttpRequest,
+                            >(params.clone())
+                            .ok()
                         }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
-                                let payload = crate::stremio_app::addon_http::run(&request);
+                                let payload = crate::laststream_app::addon_http::run(&request);
                                 reply_tx
                                     .send(RPCResponse::native_http_response(payload))
                                     .ok();
@@ -560,13 +558,13 @@ impl MainWindow {
                     Some("native-box-playlist") => {
                         if let Some(request) = msg.get_params().and_then(|params| {
                             serde_json::from_value::<
-                                crate::stremio_app::box_playlist::BoxPlaylistRequest,
+                                crate::laststream_app::box_playlist::BoxPlaylistRequest,
                             >(params.clone())
                             .ok()
                         }) {
                             let reply_tx = web_tx_web.clone();
                             thread::spawn(move || {
-                                let payload = crate::stremio_app::box_playlist::run(&request);
+                                let payload = crate::laststream_app::box_playlist::run(&request);
                                 reply_tx
                                     .send(RPCResponse::native_http_response(payload))
                                     .ok();
@@ -644,7 +642,7 @@ impl MainWindow {
                     }
                     Some("play-external") => {
                         if let Some(arg) = msg.get_params().and_then(|value| value.as_str()) {
-                            if let Err(error) = crate::stremio_app::external_player::play(arg) {
+                            if let Err(error) = crate::laststream_app::external_player::play(arg) {
                                 eprintln!("External player request failed: {error}");
                             }
                         }
@@ -803,14 +801,7 @@ impl MainWindow {
         let Some(webui_url) = self.webui_url.as_deref() else {
             return;
         };
-        let endpoint = if webui_url.trim_end_matches('/') == WEB_ENDPOINT.trim_end_matches('/') {
-            server_url
-                .map(web_endpoint_with_streaming_server)
-                .unwrap_or_else(|| webui_url.to_owned())
-        } else {
-            webui_url.to_owned()
-        };
-        self.navigate_webui(endpoint);
+        self.navigate_webui(webui_url.to_owned());
     }
     fn navigate_webui(&self, endpoint: String) {
         if let Some(sender) = self.open_media_sender.borrow().as_ref() {
