@@ -463,6 +463,8 @@ fn create_mpv(window_handle: HWND) -> Mpv {
                 eprintln!("mpv: cannot load {path}: {error:?}");
             }
         }
+        set_property!("keep-open", "no");
+        set_property!("loop-file", "no");
         Ok(())
     });
     mpv.expect("cannot build MPV")
