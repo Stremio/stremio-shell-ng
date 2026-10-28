@@ -10,14 +10,6 @@ pub fn path() -> Option<String> {
     settings_dir()
         .and_then(|dir| fs::read_to_string(dir.join(STORED_PATH_FILE)).ok())
         .filter(|path| !path.is_empty())
-        .or_else(|| {
-            dirs::config_dir()?
-                .join("mpv")
-                .join("mpv.conf")
-                .into_os_string()
-                .into_string()
-                .ok()
-        })
 }
 
 pub fn set(path: &str) -> io::Result<()> {

@@ -876,11 +876,10 @@ impl MainWindow {
     fn on_mpv_config_notice(&self) {
         let request_id = *self.requested_mpv_config.lock().unwrap();
         let Some(request_id) = request_id else { return };
-        if let Some(directory) = mpv_config::path()
-            .as_deref()
-            .and_then(|path| Path::new(path).parent())
-            .and_then(|directory| directory.to_str())
-        {
+        let directory = mpv_config::path()
+            .and_then(|path| Path::new(&path).parent().map(Path::to_path_buf))
+            .or_else(|| dirs::config_dir().map(|dir| dir.join("mpv")));
+        if let Some(directory) = directory.as_deref().and_then(Path::to_str) {
             self.mpv_config_picker.set_default_folder(directory).ok();
         }
         let result = if self.mpv_config_picker.run(Some(&self.window)) {
@@ -897,7 +896,7 @@ impl MainWindow {
                         .map_err(|error| error.to_string())
                 })
         } else {
-            Ok(None)
+            Ok(mpv_config::path())
         };
         self.requested_mpv_config.lock().unwrap().take();
         if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
