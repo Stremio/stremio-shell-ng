@@ -7,7 +7,7 @@ use std::{
     collections::VecDeque,
     io::Read,
     os::windows::process::CommandExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{self, Command},
     str,
     sync::{Arc, Mutex},
@@ -31,6 +31,7 @@ use crate::stremio_app::{
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
+    mpv_config,
     splash::SplashImage,
     stremio_player::Player,
     stremio_wevbiew::WebView,
@@ -84,6 +85,7 @@ pub struct MainWindow {
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
+    pub requested_mpv_config: Arc<Mutex<Option<u64>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
@@ -98,6 +100,12 @@ pub struct MainWindow {
     pub window_icon: nwg::Icon,
     #[nwg_resource(title: "Choose cache folder", action: nwg::FileDialogAction::OpenDirectory)]
     pub cache_directory_picker: nwg::FileDialog,
+    #[nwg_resource(
+        title: "Choose mpv configuration file",
+        action: nwg::FileDialogAction::Open,
+        filters: "mpv config(*.conf)|Any(*.*)"
+    )]
+    pub mpv_config_picker: nwg::FileDialog,
     #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [Self::on_quit(SELF, EVT_DATA)],
@@ -145,6 +153,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
     pub cache_directory_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_mpv_config_notice])]
+    pub mpv_config_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_webui_notice])]
     pub webui_notice: nwg::Notice,
@@ -358,6 +369,8 @@ impl MainWindow {
         let requested_fullscreen = self.requested_fullscreen.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
+        let requested_mpv_config = self.requested_mpv_config.clone();
+        let mpv_config_sender = self.mpv_config_notice.sender();
         let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
         let webui_events = self.webui_events.clone();
@@ -374,7 +387,10 @@ impl MainWindow {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
                         web_tx_web
-                            .send(RPCResponse::get_handshake(local_server_url.as_deref()))
+                            .send(RPCResponse::get_handshake(
+                                local_server_url.as_deref(),
+                                mpv_config::path().as_deref(),
+                            ))
                             .ok();
                     }
                     Some("pick-cache-directory") => {
@@ -402,6 +418,40 @@ impl MainWindow {
                                 *pending = Some(request);
                                 cache_directory_sender.notice();
                             }
+                        }
+                    }
+                    Some("pick-mpv-config") => {
+                        if let Some(request_id) = msg
+                            .get_params()
+                            .and_then(|params| params.get("requestId"))
+                            .and_then(|value| value.as_u64())
+                        {
+                            let mut pending = requested_mpv_config.lock().unwrap();
+                            if pending.is_some() {
+                                web_tx_web
+                                    .send(RPCResponse::mpv_config_selected(
+                                        request_id,
+                                        Err("A file picker is already open".to_owned()),
+                                    ))
+                                    .ok();
+                            } else {
+                                *pending = Some(request_id);
+                                mpv_config_sender.notice();
+                            }
+                        }
+                    }
+                    Some("reset-mpv-config") => {
+                        if let Some(request_id) = msg
+                            .get_params()
+                            .and_then(|params| params.get("requestId"))
+                            .and_then(|value| value.as_u64())
+                        {
+                            let result = mpv_config::set("")
+                                .map(|_| mpv_config::path())
+                                .map_err(|error| error.to_string());
+                            web_tx_web
+                                .send(RPCResponse::mpv_config_selected(request_id, result))
+                                .ok();
                         }
                     }
                     Some("win-set-interface-scale") => {
@@ -820,6 +870,38 @@ impl MainWindow {
                     request.request_id,
                     result,
                 ))
+                .ok();
+        }
+    }
+    fn on_mpv_config_notice(&self) {
+        let request_id = *self.requested_mpv_config.lock().unwrap();
+        let Some(request_id) = request_id else { return };
+        let directory = mpv_config::path()
+            .and_then(|path| Path::new(&path).parent().map(Path::to_path_buf))
+            .or_else(|| dirs::config_dir().map(|dir| dir.join("mpv")));
+        if let Some(directory) = directory.as_deref().and_then(Path::to_str) {
+            self.mpv_config_picker.set_default_folder(directory).ok();
+        }
+        let result = if self.mpv_config_picker.run(Some(&self.window)) {
+            self.mpv_config_picker
+                .get_selected_item()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    path.into_string()
+                        .map_err(|_| "The selected file path is not valid Unicode".to_owned())
+                })
+                .and_then(|path| {
+                    mpv_config::set(&path)
+                        .map(|_| Some(path))
+                        .map_err(|error| error.to_string())
+                })
+        } else {
+            Ok(mpv_config::path())
+        };
+        self.requested_mpv_config.lock().unwrap().take();
+        if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
+            web_tx
+                .send(RPCResponse::mpv_config_selected(request_id, result))
                 .ok();
         }
     }
