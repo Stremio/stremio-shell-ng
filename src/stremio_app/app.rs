@@ -19,8 +19,8 @@ use winapi::{
     um::{
         winbase::CREATE_BREAKAWAY_FROM_JOB,
         winuser::{
-            GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
-            WS_CAPTION, WS_EX_TOPMOST,
+            GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER,
+            WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
         },
     },
 };
@@ -738,7 +738,17 @@ impl MainWindow {
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
-        data.set_min_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
+        // nwg scales by the system DPI, but per-monitor v2 needs the window's monitor DPI
+        let system_dpi = unsafe { nwg::dpi() };
+        let dpi = self
+            .window
+            .handle
+            .hwnd()
+            .map_or(system_dpi, |hwnd| unsafe { GetDpiForWindow(hwnd) } as i32);
+        data.set_min_size(
+            WINDOW_MIN_WIDTH * dpi / system_dpi,
+            WINDOW_MIN_HEIGHT * dpi / system_dpi,
+        );
     }
     fn on_paint(&self) {
         if !self.splash_screen.visible() {
