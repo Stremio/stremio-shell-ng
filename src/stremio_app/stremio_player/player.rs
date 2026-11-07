@@ -697,8 +697,13 @@ fn create_event_thread(
                     .expect("failed to observer MPV property");
             }
 
-            let event = match mpv_event_client.wait_event(0.1) {
-                Some(Ok(event)) => event,
+            let (event, error) = match mpv_event_client.wait_event(0.1) {
+                Some(Ok(event)) => (event, ""),
+                // This client sends no async requests, so Raw can only come from END_FILE.
+                Some(Err(libmpv2::Error::Raw(code))) => (
+                    Event::EndFile(libmpv2::mpv_end_file_reason::Error),
+                    libmpv2_sys::mpv_error_str(code),
+                ),
                 Some(Err(error)) => {
                     eprintln!("Event errored: {error:?}");
                     continue;
@@ -761,7 +766,7 @@ fn create_event_thread(
                 ),
                 Event::EndFile(reason) => PlayerResponse(
                     "mpv-event-ended",
-                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
+                    PlayerEvent::End(PlayerEnded::from_end_reason(reason, error)),
                 ),
                 Event::Shutdown => {
                     break;
