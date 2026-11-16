@@ -18243,7 +18243,22 @@
         get: key => cache[key] || null
     };
 }, function(module, exports, __webpack_require__) {
-    var url = __webpack_require__(6), os = __webpack_require__(23), events = __webpack_require__(4), path = __webpack_require__(5), util = __webpack_require__(0), fs = __webpack_require__(1), fetch = __webpack_require__(34), connect = __webpack_require__(599), rangeParser = __webpack_require__(181), contentDisposition = __webpack_require__(182), bodyParser = __webpack_require__(51), Router = __webpack_require__(80), mime = __webpack_require__(46), pump = __webpack_require__(125), PeerSearch = __webpack_require__(625), parseTorrentFile = __webpack_require__(311), EngineFS = new events.EventEmitter, Counter = __webpack_require__(674), GuessFileIdx = __webpack_require__(675), spoofedPeerId = __webpack_require__(676), safeStatelessRegex = __webpack_require__(82), IH_REGEX = new RegExp("([0-9A-Fa-f]){40}", "g");
+    var url = __webpack_require__(6), os = __webpack_require__(23), events = __webpack_require__(4), path = __webpack_require__(5), fs = __webpack_require__(1), fetch = __webpack_require__(34), connect = __webpack_require__(599), rangeParser = __webpack_require__(181), contentDisposition = __webpack_require__(182), bodyParser = __webpack_require__(51), Router = __webpack_require__(80), mime = __webpack_require__(46), pump = __webpack_require__(125), PeerSearch = __webpack_require__(625), parseTorrentFile = __webpack_require__(311), EngineFS = new events.EventEmitter, Counter = __webpack_require__(674), GuessFileIdx = __webpack_require__(675), spoofedPeerId = __webpack_require__(676), safeStatelessRegex = __webpack_require__(82), IH_REGEX = /^[0-9A-Fa-f]{40}$/;
+    function parseFileMustInclude(list) {
+        var isRegex = /^\/(.*)\/(.*)$/;
+        return (list || []).map((function(el) {
+            if (el instanceof RegExp) return el;
+            var parts = isRegex.exec(el || "");
+            if (parts) try {
+                return new RegExp(parts[1], parts[2]);
+            } catch (e) {}
+            try {
+                return new RegExp(el);
+            } catch (e) {
+                return null;
+            }
+        })).filter(Boolean);
+    }
     EngineFS.STREAM_TIMEOUT = 3e4, EngineFS.ENGINE_TIMEOUT = 6e4;
     var engines = {};
     function createEngine(infoHash, options, cb) {
@@ -18252,7 +18267,7 @@
             "function" == typeof options && (cb = options, options = null), cb = cb || function() {}, 
             EngineFS.once("engine-ready:" + infoHash, (function() {
                 cb(null, engines[infoHash]);
-            })), (options = util._extend(EngineFS.getDefaults(infoHash), options || {})).path = options.path || EngineFS.getCachePath(infoHash), 
+            })), (options = Object.assign(EngineFS.getDefaults(infoHash), options || {})).path = options.path || EngineFS.getCachePath(infoHash), 
             Emit([ "engine-create", infoHash, options ]);
             var torrent = options.torrent || "magnet:?xt=urn:btih:" + infoHash;
             options.id = spoofedPeerId();
@@ -18328,24 +18343,17 @@
     };
     var router = Router(), externalRouter = Router();
     function prewarmStream(hash, idx) {
-        engines[hash] && engines[hash].ready((function() {
-            engines[hash].files[idx].select();
+        var e = getEngine(hash);
+        e && e.ready((function() {
+            e.files[idx].select();
         }));
     }
     var jsonHead = {
         "Content-Type": "application/json"
     };
     function handleTorrent(req, res, next) {
-        var u = url.parse(req.url, !0), trackers = u.query.tr && [].concat(u.query.tr), fileMustInclude = u.query.f && [].concat(u.query.f), isRegex = /^\/(.*)\/(.*)$/;
-        fileMustInclude = (fileMustInclude || []).map((function(el) {
-            if ((el || "").match(isRegex)) {
-                var parts = isRegex.exec(el);
-                try {
-                    return new RegExp(parts[1], parts[2]);
-                } catch (e) {}
-            }
-            return el;
-        })), (function(path, trackers, fileMustInclude, cb) {
+        var u = url.parse(req.url, !0), trackers = u.query.tr && [].concat(u.query.tr), fileMustInclude = parseFileMustInclude(u.query.f && [].concat(u.query.f));
+        !(function(path, trackers, fileMustInclude, cb) {
             var parts = path.split("/").filter((function(x) {
                 return x;
             }));
@@ -18363,8 +18371,7 @@
                     if (err) return cb(err);
                     if ((fileMustInclude || []).length && engine.files.find((function(file, idx) {
                         return !!fileMustInclude.find((function(reg) {
-                            return reg = "string" == typeof reg ? new RegExp(reg) : reg, !!safeStatelessRegex(file.name, reg, 500) && (i = idx, 
-                            !0);
+                            return !!safeStatelessRegex(file.name, reg, 500) && (i = idx, !0);
                         }));
                     })), isNaN(i)) {
                         var name = decodeURIComponent(parts[1]);
@@ -18392,8 +18399,11 @@
             };
             res.on("finish", emitClose), res.on("close", emitClose), req.connection.setTimeout(864e5);
             var range = req.headers.range;
-            range && range.endsWith("-") && (EngineFS.getDefaults(e.infoHash).circularBuffer || prewarmStream(e.infoHash, e.files.indexOf(handle))), 
-            range = range && rangeParser(handle.length, range)[0], res.setHeader("Accept-Ranges", "bytes"), 
+            range && range.endsWith("-") && (EngineFS.getDefaults(e.infoHash).circularBuffer || prewarmStream(e.infoHash, e.files.indexOf(handle)));
+            var ranges = range && rangeParser(handle.length, range);
+            if (-1 === ranges) return res.statusCode = 416, res.setHeader("Content-Range", "bytes */" + handle.length), 
+            res.end();
+            range = Array.isArray(ranges) ? ranges[0] : void 0, res.setHeader("Accept-Ranges", "bytes"), 
             res.setHeader("Content-Type", mime.lookup(handle.name)), res.setHeader("Cache-Control", "max-age=0, no-cache"), 
             u.query.download && res.setHeader("Content-Disposition", contentDisposition(handle.name)), 
             u.query.subtitles && res.setHeader("CaptionInfo.sec", u.query.subtitles);
@@ -18401,14 +18411,14 @@
             return req.headers["enginefs-prio"] && (opts.priority = parseInt(req.headers["enginefs-prio"]) || 1), 
             range ? (res.statusCode = 206, res.setHeader("Content-Length", range.end - range.start + 1), 
             res.setHeader("Content-Range", "bytes " + range.start + "-" + range.end + "/" + handle.length), 
-            "HEAD" === req.method ? res.end() : void pump(handle.createReadStream(util._extend(range, opts)), res)) : (res.setHeader("Content-Length", handle.length), 
+            "HEAD" === req.method ? res.end() : void pump(handle.createReadStream(Object.assign(range, opts)), res)) : (res.setHeader("Content-Length", handle.length), 
             "HEAD" === req.method ? res.end() : void pump(handle.createReadStream(opts), res));
         }));
     }
     function createApp() {
         var app = connect();
         return app.use((function(req, res, next) {
-            util._extend(req, url.parse(req.url, !0)), EngineFS.loggingEnabled && console.log("-> " + req.method + " " + url.parse(req.url).path + " " + (req.headers.range || "")), 
+            Object.assign(req, url.parse(req.url, !0)), EngineFS.loggingEnabled && console.log("-> " + req.method + " " + url.parse(req.url).path + " " + (req.headers.range || "")), 
             next();
         })), app.use(bodyParser.json({
             limit: "3mb"
@@ -18458,16 +18468,16 @@
             downloaded: e.swarm.downloaded,
             uploaded: e.swarm.uploaded,
             downloadSpeed: e.swarm.downloadSpeed(),
-            uploadSpeed: e.swarm.downloadSpeed(),
+            uploadSpeed: e.swarm.uploadSpeed(),
             sources: e.swarm.peerSearch && e.swarm.peerSearch.stats(),
             peerSearchRunning: e.swarm.peerSearch ? e.swarm.peerSearch.isRunning() : void 0,
             opts: e.options
         };
-        return !isNaN(idx) && e.torrent && e.torrent.files[idx] && util._extend(s, (function(e, file) {
+        return !isNaN(idx) && e.torrent && e.torrent.files[idx] && Object.assign(s, (function(e, file) {
             var stats = {};
             stats.streamLen = file.length, stats.streamName = file.name;
             for (var startPiece = file.offset / e.torrent.pieceLength | 0, endPiece = (file.offset + file.length - 1) / e.torrent.pieceLength | 0, availablePieces = 0, i = startPiece; i <= endPiece; i++) e.bitfield.get(i) && availablePieces++;
-            var filePieces = Math.ceil(file.length / e.torrent.pieceLength);
+            var filePieces = endPiece - startPiece + 1;
             return stats.streamProgress = availablePieces / filePieces, stats;
         })(e, e.torrent.files[idx])), s;
     }
@@ -18477,13 +18487,13 @@
     router.use(sendCORSHeaders), router.get("/favicon.ico", (function(req, res) {
         res.writeHead(404, jsonHead), res.end();
     })), router.get("/:infoHash/stats.json", (function(req, res) {
-        res.writeHead(200, jsonHead), res.end(JSON.stringify(getStatistics(engines[req.params.infoHash])));
+        res.writeHead(200, jsonHead), res.end(JSON.stringify(getStatistics(getEngine(req.params.infoHash))));
     })), router.get("/:infoHash/:idx/stats.json", (function(req, res) {
-        res.writeHead(200, jsonHead), res.end(JSON.stringify(getStatistics(engines[req.params.infoHash], req.params.idx)));
+        res.writeHead(200, jsonHead), res.end(JSON.stringify(getStatistics(getEngine(req.params.infoHash), req.params.idx)));
     })), router.get("/stats.json", (function(req, res) {
         res.writeHead(200, jsonHead);
         var stats = {};
-        for (ih in req.url.match("sys=1") && (stats.sys = {
+        for (var ih in req.url.match("sys=1") && (stats.sys = {
             loadavg: os.loadavg(),
             cpus: os.cpus()
         }), engines) stats[ih] = getStatistics(engines[ih]);
@@ -18494,24 +18504,13 @@
             res.writeHead(200, jsonHead);
             var engineStats = getStatistics(engines[ih]);
             if (engineStats.files) {
-                if ((body.fileMustInclude || []).length) {
-                    var isRegex = /^\/(.*)\/(.*)$/;
-                    fileMustInclude = body.fileMustInclude.map((function(el) {
-                        if ((el || "").match(isRegex)) {
-                            var parts = isRegex.exec(el);
-                            try {
-                                return new RegExp(parts[1], parts[2]);
-                            } catch (e) {}
-                        }
-                        return el;
-                    })), engineStats.files.find((function(file, idx) {
-                        return !!fileMustInclude.find((function(reg) {
-                            return reg = "string" == typeof reg ? new RegExp(reg) : reg, !!safeStatelessRegex(file.name, reg, 500) && (engineStats.guessedFileIdx = idx, 
-                            !0);
-                        }));
+                var fileMustInclude = parseFileMustInclude([].concat(body.fileMustInclude || []));
+                fileMustInclude.length && engineStats.files.find((function(file, idx) {
+                    return !!fileMustInclude.find((function(reg) {
+                        return !!safeStatelessRegex(file.name, reg, 500) && (engineStats.guessedFileIdx = idx, 
+                        !0);
                     }));
-                }
-                body.guessFileIdx && !engineStats.hasOwnProperty("guessedFileIdx") && (engineStats.guessedFileIdx = GuessFileIdx(engineStats.files, body.guessFileIdx));
+                })), body.guessFileIdx && !engineStats.hasOwnProperty("guessedFileIdx") && (engineStats.guessedFileIdx = GuessFileIdx(engineStats.files, body.guessFileIdx));
             }
             res.end(JSON.stringify(engineStats));
         }));
@@ -18550,7 +18549,7 @@
             res.writeHead(200, jsonHead), res.end(JSON.stringify({}));
         }));
     })), router.get("/removeAll", (function(req, res) {
-        for (ih in engines) removeEngine(ih);
+        for (var ih in engines) removeEngine(ih);
         res.writeHead(200, jsonHead), res.end(JSON.stringify({}));
     })), router.get("/:infoHash/:idx", sendDLNAHeaders, handleTorrent), router.get("/:infoHash/:idx/*", sendDLNAHeaders, handleTorrent), 
     EngineFS.on("stream-open", (function(infoHash, fileIndex) {
@@ -18560,18 +18559,16 @@
             if (!file.__cacheEvents) {
                 file.__cacheEvents = !0, EngineFS.emit("stream-created", infoHash, fileIndex, file);
                 for (var startPiece = file.offset / e.torrent.pieceLength | 0, endPiece = (file.offset + file.length - 1) / e.torrent.pieceLength | 0, fpieces = [], i = startPiece; i <= endPiece; i++) e.bitfield.get(i) || fpieces.push(i);
-                var filePieces = Math.ceil(file.length / e.torrent.pieceLength), onDownload = function(p) {
+                var filePieces = endPiece - startPiece + 1, fpath = e.store.getDest && e.store.getDest(fileIndex), onDownload = function(p) {
                     if (void 0 !== p) {
                         var idx = fpieces.indexOf(p);
                         if (-1 == idx) return;
                         fpieces.splice(idx, 1);
                     }
-                    if (EngineFS.emit("stream-progress:" + infoHash + ":" + fileIndex, (filePieces - fpieces.length) / filePieces, fpath), 
-                    !fpieces.length) {
-                        var fpath = e.store.getDest && e.store.getDest(fileIndex);
-                        EngineFS.emit("stream-cached:" + infoHash + ":" + fileIndex, fpath, file), EngineFS.emit("stream-cached", infoHash, fileIndex, fpath, file), 
-                        e.removeListener("download", onDownload), e.removeListener("verify", onDownload);
-                    }
+                    EngineFS.emit("stream-progress:" + infoHash + ":" + fileIndex, (filePieces - fpieces.length) / filePieces, fpath), 
+                    fpieces.length || (EngineFS.emit("stream-cached:" + infoHash + ":" + fileIndex, fpath, file), 
+                    EngineFS.emit("stream-cached", infoHash, fileIndex, fpath, file), e.removeListener("download", onDownload), 
+                    e.removeListener("verify", onDownload));
                 };
                 e.on("verify", onDownload), onDownload();
                 var vLen = e.torrent.realPieceLength || e.torrent.verificationLen || e.torrent.pieceLength, ratio = (startPiece = file.offset / vLen | 0, 
@@ -18608,16 +18605,16 @@
     EngineFS.create = createEngine, EngineFS.exists = existsEngine, EngineFS.getFilename = function(infoHash, fileIdx) {
         return !!existsEngine(infoHash) && (getEngine(infoHash).files[fileIdx] || {}).name;
     }, EngineFS.remove = removeEngine, EngineFS.settings = function(infoHash, settings) {
-        var e = engines[infoHash];
+        var e = getEngine(infoHash);
         e && (settings.hasOwnProperty("writeQueue") && e.store.writequeue && e.ready((function() {
             "PAUSE" == settings.writeQueue ? (e.store.writequeue.pause(), setTimeout((function() {
                 e.store.writequeue.resume();
             }), 5e4)) : e.store.writequeue.resume();
         })), "PAUSE" == settings.swarm && e.swarm.pause(), "RESUME" == settings.swarm && e.swarm.resume());
     }, EngineFS.stats = function(infoHash, idx) {
-        return engines[infoHash] ? getStatistics(engines[infoHash], idx) : null;
+        return existsEngine(infoHash) ? getStatistics(getEngine(infoHash), idx) : null;
     }, EngineFS.list = listEngines, EngineFS.getSelections = getSelections, EngineFS.keepConcurrency = function(hash, concurrency) {
-        const enginesCount = listEngines().length + 1;
+        const enginesCount = listEngines().length + (existsEngine(hash) ? 0 : 1);
         if (!concurrency || enginesCount <= concurrency) return Promise.resolve();
         console.log("keep concurrency", concurrency);
         const enginesToRemove = listEngines().filter((ih => ih.toLowerCase() !== hash.toLowerCase() && 0 === getSelections(ih).length)).slice(0, enginesCount - concurrency);
@@ -36124,7 +36121,7 @@
 }, function(module) {
     module.exports = {
         name: "stremio-server",
-        version: "4.22.5",
+        version: "4.22.6",
         stremioRuntimeVersion: "4.0",
         description: "Stremio HTTP server",
         main: "init.js",
@@ -36149,10 +36146,10 @@
             castv2: "Ivshti/node-castv2",
             debounce: "^1.0.0",
             "dns-txt": "^2.0.2",
-            enginefs: "https://github.com/Stremio/enginefs#ef982ae00a788316268eaef7a79b6e760768fac6",
+            enginefs: "https://github.com/Stremio/enginefs#912cc73a52a8a776ef27fea4b40b015115869524",
             "ffmpeg-ffprobe-static": "4.3.1-rc.6",
             "follow-redirects": "^1.13.3",
-            "get-tracks-data": "^0.8.2",
+            "get-tracks-data": "https://github.com/Stremio/get-tracks-data/releases/download/v0.8.3/get-tracks-data-0.8.3.tgz",
             ip: "^1.1.5",
             "is-positive-integer": "^1.1.1",
             "mime-types": "^2.1.15",
@@ -47739,10 +47736,11 @@
 }, function(module, exports, __webpack_require__) {
     (function(__dirname) {
         process.env.TV_ENV && (process.env.CASTING_DISABLED = 1, process.env.DISABLE_CACHING = 1, 
-        process.env.NO_CORS = 1, process.env.HLS_V2_DISABLED = 1), process.env.UNITY_ENV && (process.env.NO_NETWORK_INTERFACES = 1, 
-        process.env.CASTING_DISABLED = 1, process.env.DISABLE_CACHING = 1, process.env.NO_CORS = 1, 
-        process.env.HLS_V2_DISABLED = 1), process.env.IOS_APP && (process.env.CASTING_DISABLED = 1, 
-        process.env.HLS_V2_DISABLED = 1, process.env.NO_HTTPS_SERVER = 1), process.env.UWP_ENV && (process.env.NO_NETWORK_INTERFACES = 1, 
+        process.env.NO_CORS = 1, process.env.HLS_V2_DISABLED = 1, process.env.DOWNLOADER_DISABLED = 1), 
+        process.env.UNITY_ENV && (process.env.NO_NETWORK_INTERFACES = 1, process.env.CASTING_DISABLED = 1, 
+        process.env.DISABLE_CACHING = 1, process.env.NO_CORS = 1, process.env.HLS_V2_DISABLED = 1), 
+        process.env.IOS_APP && (process.env.CASTING_DISABLED = 1, process.env.HLS_V2_DISABLED = 1, 
+        process.env.NO_HTTPS_SERVER = 1), process.env.UWP_ENV && (process.env.NO_NETWORK_INTERFACES = 1, 
         process.env.CASTING_DISABLED = 1, process.env.DISABLE_CACHING = 1, process.env.NO_CORS = 1, 
         process.env.HLS_V2_DISABLED = 1, process.env.DOWNLOADER_DISABLED = 1), __webpack_require__(578);
         var enginefs = __webpack_require__(177), fs = __webpack_require__(1), path = __webpack_require__(5), os = __webpack_require__(23), http = __webpack_require__(10), url = __webpack_require__(6), ip = __webpack_require__(130), mkdirp = __webpack_require__(191), HLS = __webpack_require__(678), moment = __webpack_require__(2), isPositiveInteger = __webpack_require__(408), subtitlesTracks = __webpack_require__(744), subtitlesHash = __webpack_require__(804), https = __webpack_require__(814), proxy = __webpack_require__(815), defaultTrackers = __webpack_require__(816).map((el => `tracker:${el}`)), hwAccelProfiler = __webpack_require__(421).profiler, getTracksData = __webpack_require__(822).default, bridge = __webpack_require__(146), argv = __webpack_require__(825)(process.argv.slice(2)), apiCertifficateEndpoint = argv["https-cert-endpoint"] || process.env.HTTPS_CERT_ENDPOINT || "https://api.strem.io/api/certificateGet", webUILocation = argv["webui-location"] || process.env.WEBUI_LOCATION || "https://app.strem.io/shell-v4.4/", cache = __webpack_require__(423), defaultCacheRoot = __webpack_require__(199), searchPaths = {
@@ -63275,7 +63273,7 @@
         }));
     };
 }, function(module, exports, __webpack_require__) {
-    var parseVideoName = __webpack_require__(312), MEDIA_FILE_EXTENTIONS = /.mkv$|.avi$|.mp4$|.wmv$|.vp8$|.mov$|.mpg$|.ts$|.m3u8$|.webm$|.flac$|.mp3$|.wav$|.wma$|.aac$|.ogg$/i;
+    var parseVideoName = __webpack_require__(312), MEDIA_FILE_EXTENTIONS = /\.(mkv|avi|mp4|wmv|vp8|mov|mpg|ts|m3u8|webm|flac|mp3|wav|wma|aac|ogg)$/i;
     module.exports = function(files, seriesInfo) {
         if (!files || !Array.isArray(files) || !seriesInfo) return -1;
         var mediaFiles = files.filter((function(file) {
@@ -72330,7 +72328,7 @@
         }
     };
 }, function(module, exports) {
-    module.exports = [ "udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce", "udp://open.demonii.com:1337/announce", "udp://open.tracker.cl:1337/announce", "udp://exodus.desync.com:6969/announce", "udp://tracker.torrent.eu.org:451/announce", "udp://tracker.skynetcloud.site:6969/announce", "udp://tracker.qu.ax:6969/announce", "udp://tracker.corpscorp.online:80/announce", "udp://tracker-udp.gbitt.info:80/announce", "udp://tracker.bittor.pw:1337/announce", "udp://retracker01-msk-virt.corbina.net:80/announce", "udp://tracker.tryhackx.org:6969/announce", "udp://explodie.org:6969/announce", "udp://tracker.ducks.party:1984/announce", "udp://tracker2.dler.org:80/announce", "udp://tracker.dler.org:6969/announce", "http://tracker.dler.com:6969/announce", "udp://tracker.nyaa.vc:6969/announce", "udp://tracker.peerfect.org:6969/announce" ];
+    module.exports = [ "udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce", "udp://tracker.torrent.eu.org:451/announce", "udp://open.demonii.com:1337/announce", "udp://open.tracker.cl:1337/announce", "udp://exodus.desync.com:6969/announce", "udp://tracker.qu.ax:6969/announce", "udp://tracker.ducks.party:1984/announce", "udp://tracker-udp.gbitt.info:80/announce", "udp://tracker.nyaa.vc:6969/announce", "udp://tracker.tryhackx.org:6969/announce", "http://tracker2.dler.org:80/announce", "udp://tracker.corpscorp.online:80/announce", "udp://tracker.bittor.pw:1337/announce", "http://tracker.dler.org:6969/announce", "udp://explodie.org:6969/announce", "udp://tracker.theoks.net:6969/announce", "http://tracker.dler.com:6969/announce", "http://tracker.renfei.net:8080/announce", "udp://tracker.peerfect.org:6969/announce" ];
 }, function(module, exports, __webpack_require__) {
     const profiles = __webpack_require__(198), userSettings = __webpack_require__(107), cache = __webpack_require__(423), fetch = __webpack_require__(34), saveSettings = settings => {
         userSettings.extend(settings), cache.setOptionValues(userSettings), userSettings.save((function() {}));
@@ -72562,28 +72560,28 @@
     };
 }, function(module, exports, __webpack_require__) {
     "use strict";
-    function e(e, n) {
-        (null == n || n > e.length) && (n = e.length);
-        for (var t = 0, r = new Array(n); t < n; t++) r[t] = e[t];
+    function e(e, t) {
+        (null == t || t > e.length) && (t = e.length);
+        for (var n = 0, r = new Array(t); n < t; n++) r[n] = e[n];
         return r;
     }
-    function t(e) {
+    function n(e) {
         if (void 0 === e) throw new ReferenceError("this hasn't been initialised - super() hasn't been called");
         return e;
     }
-    function r(e, n, t, r, a, u, i) {
+    function r(e, t, n, r, a, u, i) {
         try {
             var o = e[u](i), f = o.value;
         } catch (e) {
-            return void t(e);
+            return void n(e);
         }
-        o.done ? n(f) : Promise.resolve(f).then(r, a);
+        o.done ? t(f) : Promise.resolve(f).then(r, a);
     }
     function a(e) {
         return function() {
-            var n = this, t = arguments;
+            var t = this, n = arguments;
             return new Promise((function(a, u) {
-                var i = e.apply(n, t);
+                var i = e.apply(t, n);
                 function o(e) {
                     r(i, a, u, o, f, "next", e);
                 }
@@ -72594,78 +72592,78 @@
             }));
         };
     }
-    function u(e, n) {
-        if (!(e instanceof n)) throw new TypeError("Cannot call a class as a function");
+    function u(e, t) {
+        if (!(e instanceof t)) throw new TypeError("Cannot call a class as a function");
     }
-    function i(e, n) {
-        for (var t = 0; t < n.length; t++) {
-            var r = n[t];
+    function i(e, t) {
+        for (var n = 0; n < t.length; n++) {
+            var r = t[n];
             r.enumerable = r.enumerable || !1, r.configurable = !0, "value" in r && (r.writable = !0), 
             Object.defineProperty(e, r.key, r);
         }
     }
-    function o(e, n, t) {
-        return n && i(e.prototype, n), t && i(e, t), e;
+    function o(e, t, n) {
+        return t && i(e.prototype, t), n && i(e, n), e;
     }
     function f(e) {
         return f = Object.setPrototypeOf ? Object.getPrototypeOf : function(e) {
             return e.__proto__ || Object.getPrototypeOf(e);
         }, f(e);
     }
-    function c(e, n) {
-        if ("function" != typeof n && null !== n) throw new TypeError("Super expression must either be null or a function");
-        e.prototype = Object.create(n && n.prototype, {
+    function c(e, t) {
+        if ("function" != typeof t && null !== t) throw new TypeError("Super expression must either be null or a function");
+        e.prototype = Object.create(t && t.prototype, {
             constructor: {
                 value: e,
                 writable: !0,
                 configurable: !0
             }
-        }), n && v(e, n);
+        }), t && v(e, t);
     }
-    function d(e, n) {
-        return !n || "object" !== y(n) && "function" != typeof n ? t(e) : n;
+    function d(e, t) {
+        return !t || "object" !== y(t) && "function" != typeof t ? n(e) : t;
     }
-    function v(e, n) {
-        return v = Object.setPrototypeOf || function(e, n) {
-            return e.__proto__ = n, e;
-        }, v(e, n);
+    function v(e, t) {
+        return v = Object.setPrototypeOf || function(e, t) {
+            return e.__proto__ = t, e;
+        }, v(e, t);
     }
-    function h(e, t) {
+    function h(e, n) {
         return (function(e) {
             if (Array.isArray(e)) return e;
-        })(e) || (function(e, n) {
-            var t = null == e ? null : "undefined" != typeof Symbol && e[Symbol.iterator] || e["@@iterator"];
-            if (null != t) {
+        })(e) || (function(e, t) {
+            var n = null == e ? null : "undefined" != typeof Symbol && e[Symbol.iterator] || e["@@iterator"];
+            if (null != n) {
                 var i, o, r = [], a = !0, u = !1;
                 try {
-                    for (t = t.call(e); !(a = (i = t.next()).done) && (r.push(i.value), !n || r.length !== n); a = !0) ;
+                    for (n = n.call(e); !(a = (i = n.next()).done) && (r.push(i.value), !t || r.length !== t); a = !0) ;
                 } catch (e) {
                     u = !0, o = e;
                 } finally {
                     try {
-                        a || null == t.return || t.return();
+                        a || null == n.return || n.return();
                     } finally {
                         if (u) throw o;
                     }
                 }
                 return r;
             }
-        })(e, t) || p(e, t) || (function() {
+        })(e, n) || p(e, n) || (function() {
             throw new TypeError("Invalid attempt to destructure non-iterable instance.\\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.");
         })();
     }
     function y(e) {
         return e && "undefined" != typeof Symbol && e.constructor === Symbol ? "symbol" : typeof e;
     }
-    function p(n, t) {
-        if (n) {
-            if ("string" == typeof n) return e(n, t);
-            var r = Object.prototype.toString.call(n).slice(8, -1);
-            return "Object" === r && n.constructor && (r = n.constructor.name), "Map" === r || "Set" === r ? Array.from(r) : "Arguments" === r || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(r) ? e(n, t) : void 0;
+    function p(t, n) {
+        if (t) {
+            if ("string" == typeof t) return e(t, n);
+            var r = Object.prototype.toString.call(t).slice(8, -1);
+            return "Object" === r && t.constructor && (r = t.constructor.name), "Map" === r || "Set" === r ? Array.from(r) : "Arguments" === r || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(r) ? e(t, n) : void 0;
         }
     }
     function b(e) {
-        var n = (function() {
+        var t = (function() {
             if ("undefined" == typeof Reflect || !Reflect.construct) return !1;
             if (Reflect.construct.sham) return !1;
             if ("function" == typeof Proxy) return !0;
@@ -72677,16 +72675,16 @@
             }
         })();
         return function() {
-            var r, t = f(e);
-            if (n) {
+            var r, n = f(e);
+            if (t) {
                 var a = f(this).constructor;
-                r = Reflect.construct(t, arguments, a);
-            } else r = t.apply(this, arguments);
+                r = Reflect.construct(n, arguments, a);
+            } else r = n.apply(this, arguments);
             return d(this, r);
         };
     }
-    function g(e, n) {
-        var t, r, a, u, i = {
+    function g(e, t) {
+        var n, r, a, u, i = {
             label: 0,
             sent: function() {
                 if (1 & a[0]) throw a[1];
@@ -72703,14 +72701,14 @@
             return this;
         }), u;
         function o(e) {
-            return function(n) {
-                return f([ e, n ]);
+            return function(t) {
+                return f([ e, t ]);
             };
         }
         function f(u) {
-            if (t) throw new TypeError("Generator is already executing.");
+            if (n) throw new TypeError("Generator is already executing.");
             for (;i; ) try {
-                if (t = 1, r && (a = 2 & u[0] ? r.return : u[0] ? r.throw || ((a = r.return) && a.call(r), 
+                if (n = 1, r && (a = 2 & u[0] ? r.return : u[0] ? r.throw || ((a = r.return) && a.call(r), 
                 0) : r.next) && !(a = a.call(r, u[1])).done) return a;
                 switch (r = 0, a && (u = [ 2 & u[0], a.value ]), u[0]) {
                   case 0:
@@ -72752,11 +72750,11 @@
                     a[2] && i.ops.pop(), i.trys.pop();
                     continue;
                 }
-                u = n.call(e, i);
+                u = t.call(e, i);
             } catch (e) {
                 u = [ 6, e ], r = 0;
             } finally {
-                t = a = 0;
+                n = a = 0;
             }
             if (5 & u[0]) throw u[1];
             return {
@@ -72765,18 +72763,18 @@
             };
         }
     }
-    var w = Object.create, S = Object.defineProperty, k = Object.getOwnPropertyDescriptor, O = Object.getOwnPropertyNames, P = Object.getPrototypeOf, _ = Object.prototype.hasOwnProperty, x = function(e, n, t, r) {
+    var w = Object.create, S = Object.defineProperty, k = Object.getOwnPropertyDescriptor, O = Object.getOwnPropertyNames, P = Object.getPrototypeOf, _ = Object.prototype.hasOwnProperty, x = function(e, t, n, r) {
         var a = !0, u = !1, i = void 0;
-        if (n && "object" == (void 0 === n ? "undefined" : y(n)) || "function" == typeof n) try {
+        if (t && "object" == (void 0 === t ? "undefined" : y(t)) || "function" == typeof t) try {
             for (var c, o = function() {
                 var a = c.value;
-                !_.call(e, a) && a !== t && S(e, a, {
+                !_.call(e, a) && a !== n && S(e, a, {
                     get: function() {
-                        return n[a];
+                        return t[a];
                     },
-                    enumerable: !(r = k(n, a)) || r.enumerable
+                    enumerable: !(r = k(t, a)) || r.enumerable
                 });
-            }, f = O(n)[Symbol.iterator](); !(a = (c = f.next()).done); a = !0) o();
+            }, f = O(t)[Symbol.iterator](); !(a = (c = f.next()).done); a = !0) o();
         } catch (e) {
             u = !0, i = e;
         } finally {
@@ -72787,24 +72785,24 @@
             }
         }
         return e;
-    }, z = function(e, n, t) {
-        return t = null != e ? w(P(e)) : {}, x(!n && e && e.__esModule ? t : S(t, "default", {
+    }, z = function(e, t, n) {
+        return n = null != e ? w(P(e)) : {}, x(!t && e && e.__esModule ? n : S(n, "default", {
             value: e,
             enumerable: !0
         }), e);
-    }, j = function(e, n, t) {
-        return (function(e, n, t) {
-            return n in e ? S(e, n, {
+    }, j = function(e, t, n) {
+        return (function(e, t, n) {
+            return t in e ? S(e, t, {
                 enumerable: !0,
                 configurable: !0,
                 writable: !0,
-                value: t
-            }) : e[n] = t;
-        })(e, "symbol" != (void 0 === n ? "undefined" : y(n)) ? n + "" : n, t);
+                value: n
+            }) : e[t] = n;
+        })(e, "symbol" != (void 0 === t ? "undefined" : y(t)) ? t + "" : t, n);
     }, E = {};
-    !(function(e, n) {
-        for (var t in n) S(e, t, {
-            get: n[t],
+    !(function(e, t) {
+        for (var n in t) S(e, n, {
+            get: t[n],
             enumerable: !0
         });
     })(E, {
@@ -72820,45 +72818,45 @@
         return e.startsWith("http://") || e.startsWith("https://");
     }, M = (function(e) {
         c(r, e);
-        var n = b(r);
+        var t = b(r);
         function r(e) {
             var i;
-            u(this, r), i = n.call(this), j(t(i), "url"), j(t(i), "contentLength"), j(t(i), "bytesRead"), 
-            j(t(i), "bytesOffset"), j(t(i), "chunkSize"), j(t(i), "_request", (function(e) {
-                return new Promise((function(n, t) {
+            u(this, r), i = t.call(this), j(n(i), "url"), j(n(i), "contentLength"), j(n(i), "bytesRead"), 
+            j(n(i), "bytesOffset"), j(n(i), "chunkSize"), j(n(i), "_request", (function(e) {
+                return new Promise((function(t, n) {
                     var a = h(i.url.split("//"), 1)[0], u = {
                         range: "bytes=".concat(e[0], "-").concat(e[1])
                     };
                     ("http:" === a ? A : U).get(i.url, {
                         headers: u
-                    }, n).on("error", t);
+                    }, t).on("error", n);
                 }));
             }));
-            var o = t(i);
-            return j(t(i), "_requestRange", (function() {
+            var o = n(i);
+            return j(n(i), "_requestRange", (function() {
                 var e = a((function(e) {
-                    var n, t, r, a, u, i, f;
+                    var t, n, r, a, u, i, f;
                     return g(this, (function(c) {
                         switch (c.label) {
                           case 0:
                             return [ 4, o._request(e) ];
 
                           case 1:
-                            return t = c.sent(), o.url = t.responseUrl, r = function(e) {
-                                return t.destroy(), Promise.reject(e);
-                            }, (a = null === (n = t.headers) || void 0 === n ? void 0 : n["content-range"]) ? (u = q.exec(a)) ? (i = h(u, 4), 
-                            [ 2, (f = i[3]) ? new Promise((function(e, n) {
+                            return n = c.sent(), o.url = n.responseUrl, r = function(e) {
+                                return n.destroy(), Promise.reject(e);
+                            }, (a = null === (t = n.headers) || void 0 === t ? void 0 : t["content-range"]) ? (u = q.exec(a)) ? (i = h(u, 4), 
+                            [ 2, (f = i[3]) ? new Promise((function(e, t) {
                                 var r = [];
-                                t.on("data", (function(e) {
+                                n.on("data", (function(e) {
                                     r.push(e);
-                                })), t.on("end", (function() {
+                                })), n.on("end", (function() {
                                     e([ Buffer.concat(r), parseInt(f) ]);
-                                })), t.on("error", n);
+                                })), n.on("error", t);
                             })) : r("Failed to parse length from Content-Range header") ]) : [ 2, r("Failed to parse range from Content-Range header") ] : [ 2, r("Failed to retrieve Content-Range from headers") ];
                         }
                     }));
                 }));
-                return function(n) {
+                return function(t) {
                     return e.apply(this, arguments);
                 };
             })()), i.url = e, i.contentLength = i.readableHighWaterMark, i.bytesRead = 0, i.bytesOffset = 0, 
@@ -72869,12 +72867,12 @@
             value: function() {
                 var e = this;
                 return a((function() {
-                    var n, t, r, a, u, i, o;
+                    var t, n, r, a, u, i, o;
                     return g(this, (function(f) {
                         switch (f.label) {
                           case 0:
-                            return f.trys.push([ 0, 2, , 3 ]), n = e.bytesOffset, t = Math.min(e.contentLength, e.bytesOffset + e.chunkSize) - 1, 
-                            r = [ n, t ], [ 4, e._requestRange(r) ];
+                            return f.trys.push([ 0, 2, , 3 ]), t = e.bytesOffset, n = Math.min(e.contentLength, e.bytesOffset + e.chunkSize) - 1, 
+                            r = [ t, n ], [ 4, e._requestRange(r) ];
 
                           case 1:
                             return a = h.apply(void 0, [ f.sent(), 2 ]), u = a[0], i = a[1], e.contentLength = i, 
@@ -72892,16 +72890,16 @@
         } ]), r;
     })(C.Readable), N = (function(e) {
         c(r, e);
-        var n = b(r);
+        var t = b(r);
         function r(e) {
             var i;
-            u(this, r), i = n.call(this), j(t(i), "path"), j(t(i), "fileSize"), j(t(i), "bytesRead"), 
-            j(t(i), "bytesOffset"), j(t(i), "chunkSize");
-            var o = t(i);
-            j(t(i), "_requestRange", (function() {
+            u(this, r), i = t.call(this), j(n(i), "path"), j(n(i), "fileSize"), j(n(i), "bytesRead"), 
+            j(n(i), "bytesOffset"), j(n(i), "chunkSize");
+            var o = n(i);
+            j(n(i), "_requestRange", (function() {
                 var e = a((function(e) {
-                    return g(this, (function(n) {
-                        return [ 2, new Promise((function(n, t) {
+                    return g(this, (function(t) {
+                        return [ 2, new Promise((function(t, n) {
                             var r = [], a = I.default.createReadStream(o.path, {
                                 start: e[0],
                                 end: e[1]
@@ -72909,12 +72907,12 @@
                             a.on("data", (function(e) {
                                 r.push(e);
                             })), a.on("end", (function() {
-                                n(Buffer.concat(r));
-                            })), a.on("error", t);
+                                t(Buffer.concat(r));
+                            })), a.on("error", n);
                         })) ];
                     }));
                 }));
-                return function(n) {
+                return function(t) {
                     return e.apply(this, arguments);
                 };
             })());
@@ -72927,12 +72925,12 @@
             value: function() {
                 var e = this;
                 return a((function() {
-                    var n, t, r, a, u;
+                    var t, n, r, a, u;
                     return g(this, (function(i) {
                         switch (i.label) {
                           case 0:
-                            return i.trys.push([ 0, 2, , 3 ]), n = e.bytesOffset, t = Math.min(e.fileSize, e.bytesOffset + e.chunkSize) - 1, 
-                            r = [ n, t ], [ 4, e._requestRange(r) ];
+                            return i.trys.push([ 0, 2, , 3 ]), t = e.bytesOffset, n = Math.min(e.fileSize, e.bytesOffset + e.chunkSize) - 1, 
+                            r = [ t, n ], [ 4, e._requestRange(r) ];
 
                           case 1:
                             return a = i.sent(), e.bytesRead += a.length, e.bytesOffset = a.length, e.push(a), 
@@ -72950,34 +72948,34 @@
         } ]), r;
     })(C.Readable), F = (function() {
         var e = a((function(e) {
-            return g(this, (function(n) {
+            return g(this, (function(t) {
                 return [ 2, D(e) ? new M(e) : new N(e) ];
             }));
         }));
-        return function(n) {
+        return function(t) {
             return e.apply(this, arguments);
         };
     })(), H = (function() {
-        function e(n, t) {
-            u(this, e), j(this, "signature"), j(this, "signatureOffset"), this.signature = n, 
-            this.signatureOffset = t;
+        function e(t, n) {
+            u(this, e), j(this, "signature"), j(this, "signatureOffset"), this.signature = t, 
+            this.signatureOffset = n;
         }
         return o(e, [ {
             key: "compare",
             value: function(e) {
-                var n = Buffer.from(this.signature, "hex"), t = e.subarray(this.signatureOffset, n.length + this.signatureOffset);
-                return 0 === Buffer.compare(n, t);
+                var t = Buffer.from(this.signature, "hex"), n = e.subarray(this.signatureOffset, t.length + this.signatureOffset);
+                return 0 === Buffer.compare(t, n);
             }
         }, {
             key: "decode",
-            value: function(e, n) {
-                var t = this;
+            value: function(e, t) {
+                var n = this;
                 return a((function() {
                     var r, a;
                     return g(this, (function(u) {
                         switch (u.label) {
                           case 0:
-                            return u.trys.push([ 0, 2, , 3 ]), [ 4, t._decode(e, n) ];
+                            return u.trys.push([ 0, 2, , 3 ]), [ 4, n._decode(e, t) ];
 
                           case 1:
                             return r = u.sent(), [ 2, Promise.resolve(r) ];
@@ -72994,16 +72992,16 @@
         }, {
             key: "format",
             value: function(e) {
-                var n = this;
+                var t = this;
                 return a((function() {
-                    var t, r;
+                    var n, r;
                     return g(this, (function(a) {
                         switch (a.label) {
                           case 0:
-                            return a.trys.push([ 0, 2, , 3 ]), [ 4, n._format(e) ];
+                            return a.trys.push([ 0, 2, , 3 ]), [ 4, t._format(e) ];
 
                           case 1:
-                            return t = a.sent(), [ 2, Promise.resolve(t) ];
+                            return n = a.sent(), [ 2, Promise.resolve(n) ];
 
                           case 2:
                             return r = a.sent(), [ 2, (console.error(r), Promise.reject("Failed to decode buffer")) ];
@@ -73021,8 +73019,8 @@
         return parseInt(e, 2);
     }, G = function(e) {
         return parseInt(e.toString("hex"), 16);
-    }, $ = function(e, n, t) {
-        return e.subarray(n, n + t).toString("hex").toUpperCase();
+    }, $ = function(e, t, n) {
+        return e.subarray(t, t + n).toString("hex").toUpperCase();
     }, J = {
         18538067: "Segment",
         "1654AE6B": "Tracks",
@@ -73034,63 +73032,63 @@
         "536E": "Name",
         86: "CodecID"
     }, K = function(e) {
-        for (var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e[n], r = W(t), a = r.indexOf("1") + 1, u = e.subarray(n, n + a), i = r.substring(a, r.length), o = 1; o < u.length; o++) i += W(u[o]);
+        for (var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e[t], r = W(n), a = r.indexOf("1") + 1, u = e.subarray(t, t + a), i = r.substring(a, r.length), o = 1; o < u.length; o++) i += W(u[o]);
         return {
             value: V(i),
             length: a
         };
     }, Q = function(e) {
-        var t, n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, r = K(e, n), a = K(e, n + r.length), u = n + r.length + a.length, i = e.subarray(u, u + a.value), o = $(e, n, r.length), f = null !== (t = J[o]) && void 0 !== t ? t : o, c = r.length + a.length + a.value;
+        var n, t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, r = K(e, t), a = K(e, t + r.length), u = t + r.length + a.length, i = e.subarray(u, u + a.value), o = $(e, t, r.length), f = null !== (n = J[o]) && void 0 !== n ? n : o, c = r.length + a.length + a.value;
         return {
             name: f,
             size: c,
             data: i,
             dataSize: a.value,
-            offset: n
+            offset: t
         };
     }, X = function(e) {
-        for (var n = [], t = 0; t < e.length; ) {
-            var r = Q(e, t);
-            n.push(r), t += r.size;
+        for (var t = [], n = 0; n < e.length; ) {
+            var r = Q(e, n);
+            t.push(r), n += r.size;
         }
-        return n;
+        return t;
     }, ee = function(e) {
         if (!e) return null;
-        var n = e.data.toString();
-        return "und" === n ? null : n;
+        var t = e.data.toString();
+        return "und" === t ? null : t;
     }, er = {
         1: "video",
         2: "audio",
         17: "text"
     }, ei = (function(e) {
-        c(t, e);
-        var n = b(t);
-        function t() {
-            return u(this, t), n.call(this, "1A45DFA3", 0);
+        c(n, e);
+        var t = b(n);
+        function n() {
+            return u(this, n), t.call(this, "1A45DFA3", 0);
         }
-        return o(t, [ {
+        return o(n, [ {
             key: "_decode",
             value: function(e) {
-                return new Promise((function(n, t) {
+                return new Promise((function(t, n) {
                     var r = X(e).find((function(e) {
                         return "Segment" === e.name;
                     }));
-                    if (!r) return t();
+                    if (!r) return n();
                     var a = X(r.data).find((function(e) {
                         return "Tracks" === e.name;
                     }));
-                    if (!a) return t();
-                    n(a);
+                    if (!a) return n();
+                    t(a);
                 }));
             }
         }, {
             key: "_format",
             value: function(e) {
-                return new Promise((function(n, t) {
+                return new Promise((function(t, n) {
                     var r = X(e.data).filter((function(e) {
                         return "TrackEntry" === e.name;
                     }));
-                    if (!r) return t();
+                    if (!r) return n();
                     var a = r.map((function(e) {
                         return X(e.data);
                     })).map((function(e) {
@@ -73115,15 +73113,15 @@
                             }))
                         };
                     })).map((function(e) {
-                        var o, n = e.trackNumber, t = e.trackType, r = e.language, a = e.languageBCP47, u = e.name, i = e.codecID, f = (function(e) {
+                        var o, t = e.trackNumber, n = e.trackType, r = e.language, a = e.languageBCP47, u = e.name, i = e.codecID, f = (function(e) {
                             if (!e) return null;
-                            var n = e.data;
-                            return G(n);
-                        })(n), c = (function(e) {
+                            var t = e.data;
+                            return G(t);
+                        })(t), c = (function(e) {
                             if (!e) return null;
-                            var n = e.data;
-                            return er[G(n)];
-                        })(t), l = null !== (o = ee(r)) && void 0 !== o ? o : ee(a), s = (function(e) {
+                            var t = e.data;
+                            return er[G(t)];
+                        })(n), l = null !== (o = ee(a)) && void 0 !== o ? o : ee(r), s = (function(e) {
                             return e ? e.data.toString() : null;
                         })(u), d = (function(e) {
                             return e ? e.data.toString().replace("V_", "").replace("A_", "").replace("S_", "") : null;
@@ -73136,25 +73134,25 @@
                             codec: d
                         };
                     }));
-                    n(a);
+                    t(a);
                 }));
             }
-        } ]), t;
+        } ]), n;
     })(H), eo = ei, ed = function(e) {
-        var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e.readUInt32BE(n), r = e.subarray(n + 4, n + 8).toString(), a = n + 8, u = 1 === t ? G(e.subarray(a, a + 8)) : null, i = n + 8 + (u ? 8 : 0), o = null != u ? u : t, f = e.subarray(i, 1 === t ? e.length : n + t), c = o - 8;
+        var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e.readUInt32BE(t), r = e.subarray(t + 4, t + 8).toString(), a = t + 8, u = 1 === n ? G(e.subarray(a, a + 8)) : null, i = t + 8 + (u ? 8 : 0), o = null != u ? u : n, f = e.subarray(i, 1 === n ? e.length : t + n), c = o - 8;
         return {
             name: r,
             size: o,
             data: f,
             dataSize: c,
-            offset: n
+            offset: t
         };
     }, ev = function(e) {
-        for (var n = [], t = 0; t < e.length; ) {
-            var r = ed(e, t);
-            n.push(r), t += r.size;
+        for (var t = [], n = 0; n < e.length; ) {
+            var r = ed(e, n);
+            t.push(r), n += r.size;
         }
-        return n;
+        return t;
     }, ep = {
         vide: "video",
         soun: "audio",
@@ -73162,48 +73160,48 @@
         sbtl: "text"
     }, em = [ "VideoHandler", "SoundHandler", "SubtitleHandler" ], eb = [ "und", "```" ], eO = (function(e) {
         c(r, e);
-        var n = b(r);
+        var t = b(r);
         function r() {
             var e;
-            return u(this, r), e = n.call(this, "66747970", 4), j(t(e), "offset", 0), e;
+            return u(this, r), e = t.call(this, "66747970", 4), j(n(e), "offset", 0), e;
         }
         return o(r, [ {
             key: "_decode",
-            value: function(e, n) {
-                var t = this;
+            value: function(e, t) {
+                var n = this;
                 return new Promise((function(r) {
                     var a = ev(e), u = a.find((function(e) {
                         return "moov" === e.name;
                     })), i = a.slice().reverse().find((function(e) {
                         return "moov" !== e.name;
                     }));
-                    return console.log(a), !u && i ? (t.offset += i.offset + i.size, n(t.offset)) : u && u.data.length !== u.dataSize ? (t.offset += u.offset, 
-                    n(t.offset, u.size)) : u && u.data.length === u.dataSize ? r(u) : void 0;
+                    return !u && i ? (n.offset += i.offset + i.size, t(n.offset)) : u && u.data.length !== u.dataSize ? (n.offset += u.offset, 
+                    t(n.offset, u.size)) : u && u.data.length === u.dataSize ? r(u) : void 0;
                 }));
             }
         }, {
             key: "_format",
             value: function(e) {
-                return new Promise((function(n) {
-                    var t = ev(e.data).filter((function(e) {
+                return new Promise((function(t) {
+                    var n = ev(e.data).filter((function(e) {
                         return "trak" === e.name;
                     })).map((function(e) {
-                        var n = ev(e.data), t = n.find((function(e) {
+                        var t = ev(e.data), n = t.find((function(e) {
                             return "tkhd" === e.name;
-                        })), r = n.find((function(e) {
+                        })), r = t.find((function(e) {
                             return "mdia" === e.name;
                         }));
-                        if (!t || !r) return null;
+                        if (!n || !r) return null;
                         var a = (function(e) {
-                            var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e[n], r = e.readUInt32BE(n + 4), a = e.readUInt32BE(n + 8), u = e.readUInt32BE(n + 12);
+                            var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e[t], r = e.readUInt32BE(t + 4), a = e.readUInt32BE(t + 8), u = e.readUInt32BE(t + 12);
                             return {
-                                version: t,
+                                version: n,
                                 creationTime: r,
                                 modificationTime: a,
                                 id: u,
-                                offset: n
+                                offset: t
                             };
-                        })(t.data), u = ev(r.data), i = u.find((function(e) {
+                        })(n.data), u = ev(r.data), i = u.find((function(e) {
                             return "mdhd" === e.name;
                         })), o = u.find((function(e) {
                             return "hdlr" === e.name;
@@ -73212,21 +73210,21 @@
                         }));
                         if (!i || !o || !f) return null;
                         var c = (function(e) {
-                            var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e[n], r = n + (1 === t ? 32 : 20), a = e.readUInt16BE(r), u = [];
+                            var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e[t], r = t + (1 === n ? 32 : 20), a = e.readUInt16BE(r), u = [];
                             u[0] = a >> 10 & 31, u[1] = a >> 5 & 31, u[2] = 31 & a;
                             var i = String.fromCharCode(u[0] + 96, u[1] + 96, u[2] + 96);
                             return {
-                                version: t,
+                                version: n,
                                 language: i,
-                                offset: n
+                                offset: t
                             };
                         })(i.data), l = (function(e) {
-                            var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e[n], r = n + 4 + 4, a = e.subarray(r, r + 4).toString(), u = r + 4 + 12, i = e.subarray(u, e.length - 1).toString();
+                            var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e[t], r = t + 4 + 4, a = e.subarray(r, r + 4).toString(), u = r + 4 + 12, i = e.subarray(u, e.length - 1).toString();
                             return {
-                                version: t,
+                                version: n,
                                 handlerType: a,
                                 name: i,
-                                offset: n
+                                offset: t
                             };
                         })(o.data), s = ev(f.data).find((function(e) {
                             return "stbl" === e.name;
@@ -73237,8 +73235,8 @@
                         }));
                         if (!d) return null;
                         var h = (function(e) {
-                            for (var n = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, t = e[n], r = e.readUInt32BE(n + 4), a = [], u = 1; u < r + 1; u++) {
-                                var i = e.readUInt32BE(n + 8 * u), o = e.subarray(n + 12 * u, n + 16 * u).toString(), f = e.subarray(n + 16 * u, n + 16 * u + i);
+                            for (var t = arguments.length > 1 && void 0 !== arguments[1] ? arguments[1] : 0, n = e[t], r = e.readUInt32BE(t + 4), a = [], u = 1; u < r + 1; u++) {
+                                var i = e.readUInt32BE(t + 8 * u), o = e.subarray(t + 12 * u, t + 16 * u).toString(), f = e.subarray(t + 16 * u, t + 16 * u + i);
                                 a.push({
                                     size: i,
                                     name: o,
@@ -73246,21 +73244,21 @@
                                 });
                             }
                             return {
-                                version: t,
+                                version: n,
                                 samples: r,
                                 entries: a,
-                                offset: n
+                                offset: t
                             };
                         })(d.data), y = null !== (v = a.id) && void 0 !== v ? v : null, p = (function(e) {
-                            var n;
-                            return null !== (n = ep[e.handlerType]) && void 0 !== n ? n : null;
+                            var t;
+                            return null !== (t = ep[e.handlerType]) && void 0 !== t ? t : null;
                         })(l), m = (function(e) {
                             return eb.includes(e.language) ? null : e.language;
                         })(c), b = (function(e) {
                             return em.includes(e.name) ? null : e.name.length ? e.name : null;
                         })(l), g = (function(e) {
-                            var n, t, r;
-                            return (null !== (r = null == e || null === (t = e.entries) || void 0 === t || null === (n = t[0]) || void 0 === n ? void 0 : n.name) && void 0 !== r ? r : null).replace("-", "").toUpperCase();
+                            var t, n, r;
+                            return (null !== (r = null == e || null === (n = e.entries) || void 0 === n || null === (t = n[0]) || void 0 === t ? void 0 : t.name) && void 0 !== r ? r : null).replace("-", "").toUpperCase();
                         })(h);
                         return {
                             id: y,
@@ -73272,46 +73270,46 @@
                     })).filter((function(e) {
                         return null !== e;
                     }));
-                    n(t);
+                    t(n);
                 }));
             }
         } ]), r;
     })(H), eP = eO, eR = (function() {
-        var e = a((function(e, n) {
-            var t, r, u;
+        var e = a((function(e, t) {
+            var n, r, u;
             return g(this, (function(i) {
                 switch (i.label) {
                   case 0:
                     return [ 4, F(e) ];
 
                   case 1:
-                    return t = i.sent(), r = [ new eo, new eP ], [ 2, new Promise((function(e, i) {
-                        var o = function(e, n) {
-                            t.pause(), t.bytesOffset = e, t.chunkSize = null != n ? n : 15728640, t.resume();
-                        }, f = function(n) {
-                            t.destroy(), u && u.format(n).then(e).catch(c);
+                    return n = i.sent(), r = [ new eo, new eP ], [ 2, new Promise((function(e, i) {
+                        var o = function(e, t) {
+                            n.pause(), n.bytesOffset = e, n.chunkSize = null != t ? t : 15728640, n.resume();
+                        }, f = function(t) {
+                            n.destroy(), u && u.format(t).then(e).catch(c);
                         }, c = function(e) {
-                            t.destroy(), i(e);
+                            n.destroy(), i(e);
                         }, l = (function() {
                             var e = a((function(e) {
                                 return g(this, (function(a) {
-                                    return (null == n ? void 0 : n.maxBytesLimit) && t.bytesRead >= n.maxBytesLimit ? [ 2, c("Reached maxBytesLimit of ".concat(n.maxBytesLimit)) ] : (u = null != u ? u : (function(e, n) {
+                                    return (null == t ? void 0 : t.maxBytesLimit) && n.bytesRead >= t.maxBytesLimit ? [ 2, c("Reached maxBytesLimit of ".concat(t.maxBytesLimit)) ] : (u = null != u ? u : (function(e, t) {
                                         return e.find((function(e) {
-                                            return e.compare(n);
+                                            return e.compare(t);
                                         }));
                                     })(r, e), u ? (u.decode(e, o).then(f).catch(c), [ 2 ]) : [ 2, c("This file type is not supported") ]);
                                 }));
                             }));
-                            return function(n) {
+                            return function(t) {
                                 return e.apply(this, arguments);
                             };
                         })();
-                        t.on("error", c).on("data", l);
+                        n.on("error", c).on("data", l);
                     })) ];
                 }
             }));
         }));
-        return function(n, t) {
+        return function(t, n) {
             return e.apply(this, arguments);
         };
     })(), ex = eR;
@@ -76330,7 +76328,8 @@
                     Range: "bytes=" + start + "-" + (void 0 === end ? "" : end),
                     "Accept-Encoding": "identity"
                 },
-                agents: this.agents
+                agents: this.agents,
+                rejectUnauthorized: !1
             }), (res => {
                 response = res;
                 const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(res.headers["content-range"] || ""), rangeStart = range && Number(range[1]), rangeEnd = range && Number(range[2]), total = range && Number(range[3]), expected = rangeEnd - rangeStart + 1;
