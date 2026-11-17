@@ -172,6 +172,7 @@ pub enum BoolProp {
     Seeking,
     EofReached,
     Keepaspect,
+    SubBold,
 }
 stringable!(BoolProp);
 // Int
