@@ -548,7 +548,7 @@ impl MainWindow {
                                         "/SILENT",
                                         "/NOCANCEL",
                                         "/FORCECLOSEAPPLICATIONS",
-                                        "/TASKS=runapp",
+                                        "/MERGETASKS=runapp",
                                     ])
                                     .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
                                     .stdin(process::Stdio::null())
