@@ -62,6 +62,24 @@ begin
   RegWriteStringValue(HKCU, Key + '\shell\open\command', '', ExpandConstant('"{app}\{#MyAppExeName}" "%1"'));
 end;
 
+{ Shells up to v5.0.28 update with exactly these arguments, which deselect every other task. }
+function IsLegacyUpdate: Boolean;
+begin
+  Result := (ParamCount = 4) and
+    (CompareText(ParamStr(1), '/SILENT') = 0) and
+    (CompareText(ParamStr(2), '/NOCANCEL') = 0) and
+    (CompareText(ParamStr(3), '/FORCECLOSEAPPLICATIONS') = 0) and
+    (CompareText(ParamStr(4), '/TASKS=runapp') = 0);
+end;
+
+<event('NextButtonClick')>
+function KeepAssociationsOnLegacyUpdate(CurPageID: Integer): Boolean;
+begin
+  if (CurPageID = wpSelectTasks) and IsLegacyUpdate then
+    WizardSelectTasks('assoctorrent');
+  Result := True;
+end;
+
 procedure UpdateFileAssociations;
 begin
   { Remove the malformed OpenWith entry written by older installers. }
