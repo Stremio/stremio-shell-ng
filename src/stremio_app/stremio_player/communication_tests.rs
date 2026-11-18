@@ -1,6 +1,6 @@
 use crate::stremio_app::stremio_player::communication::{
     BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
-    PropKey, PropVal,
+    PropKey, PropVal, StrProp,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
@@ -174,6 +174,24 @@ fn set_propr_tokens() {
             Token::TupleStructEnd,
         ],
     );
+}
+
+#[test]
+fn set_audio_spdif_message() {
+    for value in ["ac3,eac3,dts,dts-hd,truehd", ""] {
+        let msg = format!(r#"["mpv-set-prop",["audio-spdif","{value}"]]"#);
+        let in_msg: InMsg = serde_json::from_str(&msg).expect("audio-spdif is an allowed property");
+        assert_eq!(
+            in_msg,
+            InMsg(
+                InMsgFn::MpvSetProp,
+                InMsgArgs::StProp(
+                    PropKey::Str(StrProp::AudioSpdif),
+                    PropVal::Str(value.to_owned())
+                ),
+            )
+        );
+    }
 }
 
 #[test]

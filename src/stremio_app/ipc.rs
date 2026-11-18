@@ -110,6 +110,12 @@ impl RPCResponse {
                         ],
                         vec![
                             "".to_string(),
+                            "audioPassthrough".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
                             "mpvConfig".to_string(),
                             "".to_string(),
                             mpv_config.unwrap_or_default().to_string(),
