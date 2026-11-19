@@ -3,7 +3,7 @@ use crate::stremio_app::ipc;
 use crate::stremio_app::mpv_config;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
-use libmpv2::{events::Event, Format, Mpv, SetData};
+use libmpv2::{events::Event, mpv_end_file_reason, EndFileReason, Format, Mpv, SetData};
 use native_windows_gui::{self as nwg, PartialUi};
 use std::{
     collections::VecDeque,
@@ -272,6 +272,16 @@ impl VideoReadyState {
         }
         self.ready_sent_id = Some(load_id);
         Some(load_id)
+    }
+
+    fn end_reason(&self, reason: EndFileReason) -> EndFileReason {
+        let unrequested =
+            self.active_load_id.is_some() && self.active_load_id == self.current_load_id;
+        if reason == mpv_end_file_reason::Stop && unrequested {
+            mpv_end_file_reason::Eof
+        } else {
+            reason
+        }
     }
 }
 
@@ -767,10 +777,16 @@ fn create_event_thread(
                         change,
                     )),
                 ),
-                Event::EndFile(reason) => PlayerResponse(
-                    "mpv-event-ended",
-                    PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
-                ),
+                Event::EndFile(reason) => {
+                    let reason = video_ready_state
+                        .lock()
+                        .expect("cannot lock video readiness state")
+                        .end_reason(reason);
+                    PlayerResponse(
+                        "mpv-event-ended",
+                        PlayerEvent::End(PlayerEnded::from_end_reason(reason)),
+                    )
+                }
                 Event::Shutdown => {
                     break;
                 }
@@ -930,6 +946,7 @@ fn create_message_thread(
 #[cfg(test)]
 mod tests {
     use super::VideoReadyState;
+    use libmpv2::mpv_end_file_reason;
 
     #[test]
     fn ready_follows_file_loaded_restart_once() {
@@ -955,6 +972,29 @@ mod tests {
         state.start_file();
         state.file_loaded();
         assert_eq!(state.playback_restarted(), Some(current_load));
+    }
+
+    #[test]
+    fn only_unrequested_stop_ends_as_eof() {
+        let mut state = VideoReadyState::default();
+        state.begin_transition(true);
+        state.start_file();
+        assert_eq!(
+            state.end_reason(mpv_end_file_reason::Stop),
+            mpv_end_file_reason::Eof
+        );
+
+        state.begin_transition(false);
+        assert_eq!(
+            state.end_reason(mpv_end_file_reason::Stop),
+            mpv_end_file_reason::Stop
+        );
+
+        state.begin_transition(true);
+        assert_eq!(
+            state.end_reason(mpv_end_file_reason::Stop),
+            mpv_end_file_reason::Stop
+        );
     }
 
     #[test]
