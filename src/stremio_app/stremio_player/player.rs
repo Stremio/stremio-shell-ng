@@ -387,6 +387,10 @@ impl PartialUi for Player {
             rpc_response_sender.clone(),
             Arc::clone(&video_ready_state),
         );
+        let spdif_fallback_client = mpv
+            .create_client(None)
+            .expect("cannot create MPV passthrough fallback client");
+        let _spdif_fallback_thread = create_spdif_fallback_thread(spdif_fallback_client);
         let gpu_video_processing = Arc::new(AtomicBool::new(false));
         let _display_thread = create_display_output_thread(
             Arc::clone(&mpv),
@@ -787,6 +791,40 @@ fn create_event_thread(
     })
 }
 
+/// When `audio-spdif` is set but the audio output can't take passthrough (headphones, speakers,
+/// receiver off), mpv falls back to decoding the audio and then never starts playback.
+/// Clearing `audio-spdif` gets the file playing, decoded; the web UI sets it again on the next load.
+fn create_spdif_fallback_thread(mpv_client: Mpv) -> JoinHandle<()> {
+    thread::spawn(move || {
+        // The fallback is only reported in mpv's verbose log.
+        let level = CString::new("v").expect("valid log level");
+        let error = unsafe {
+            libmpv2_sys::mpv_request_log_messages(mpv_client.ctx.as_ptr(), level.as_ptr())
+        };
+        if error < 0 {
+            eprintln!("mpv: cannot watch for the passthrough fallback: {error}");
+            return;
+        }
+        loop {
+            match mpv_client.wait_event(-1.0) {
+                Some(Ok(Event::LogMessage { prefix, text, .. }))
+                    if is_spdif_fallback(prefix, text) =>
+                {
+                    if let Err(error) = mpv_client.set_property("audio-spdif", "") {
+                        eprintln!("mpv: cannot turn off passthrough after the fallback: {error:#}");
+                    }
+                }
+                Some(Ok(Event::Shutdown)) => break,
+                _ => {}
+            }
+        }
+    })
+}
+
+fn is_spdif_fallback(prefix: &str, text: &str) -> bool {
+    prefix == "cplayer" && text.trim_end() == "Falling back to PCM output."
+}
+
 fn create_message_thread(
     mpv: Arc<Mpv>,
     window_handle: isize,
@@ -861,6 +899,11 @@ fn create_message_thread(
             }
         }
 
+        // An empty `audio-spdif` from the web UI (passthrough off) falls back to the user's mpv config.
+        let config_audio_spdif = mpv
+            .get_property::<String>("audio-spdif")
+            .unwrap_or_default();
+
         // -- InMsg handler loop --
 
         for msg in in_msg_receiver.iter() {
@@ -895,6 +938,8 @@ fn create_message_thread(
                     let is_vo = name.to_string() == "vo";
                     let value = if is_vo {
                         with_gpu_next_fallback(value)
+                    } else if name.to_string() == "audio-spdif" && value.is_empty() {
+                        config_audio_spdif.clone()
                     } else {
                         value
                     };
@@ -929,7 +974,17 @@ fn create_message_thread(
 
 #[cfg(test)]
 mod tests {
-    use super::VideoReadyState;
+    use super::{is_spdif_fallback, VideoReadyState};
+
+    #[test]
+    fn spdif_fallback_is_detected_from_the_mpv_log() {
+        assert!(is_spdif_fallback(
+            "cplayer",
+            "Falling back to PCM output.\n"
+        ));
+        assert!(!is_spdif_fallback("ao", "Falling back to PCM output.\n"));
+        assert!(!is_spdif_fallback("cplayer", "Starting playback...\n"));
+    }
 
     #[test]
     fn ready_follows_file_loaded_restart_once() {

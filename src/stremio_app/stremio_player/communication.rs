@@ -208,6 +208,7 @@ stringable!(FpProp);
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum StrProp {
+    AudioSpdif,
     FfmpegVersion,
     ForceMediaTitle,
     Hwdec,
