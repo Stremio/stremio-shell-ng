@@ -209,6 +209,7 @@ stringable!(FpProp);
 #[display(style = "kebab-case")]
 pub enum StrProp {
     FfmpegVersion,
+    ForceMediaTitle,
     Hwdec,
     InputDefaultBindings,
     InputVoKeyboard,
