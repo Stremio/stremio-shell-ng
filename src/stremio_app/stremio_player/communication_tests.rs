@@ -1,6 +1,6 @@
 use crate::stremio_app::stremio_player::communication::{
-    BoolProp, CmdVal, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange, PlayerResponse,
-    PropKey, PropVal,
+    BoolProp, CmdVal, FpProp, InMsg, InMsgArgs, InMsgFn, PlayerEnded, PlayerProprChange,
+    PlayerResponse, PropKey, PropVal,
 };
 use libmpv2::{events::PropertyData, mpv_end_file_reason};
 
@@ -173,6 +173,28 @@ fn set_propr_tokens() {
             Token::TupleEnd,
             Token::TupleStructEnd,
         ],
+    );
+}
+
+#[test]
+fn audio_delay_messages() {
+    let set: InMsg = serde_json::from_str(r#"["mpv-set-prop",["audio-delay",-0.3]]"#)
+        .expect("audio-delay can be set");
+    assert_eq!(
+        set,
+        InMsg(
+            InMsgFn::MpvSetProp,
+            InMsgArgs::StProp(PropKey::Fp(FpProp::AudioDelay), PropVal::Num(-0.3)),
+        )
+    );
+    let observe: InMsg = serde_json::from_str(r#"["mpv-observe-prop","audio-delay"]"#)
+        .expect("audio-delay can be observed");
+    assert_eq!(
+        observe,
+        InMsg(
+            InMsgFn::MpvObserveProp,
+            InMsgArgs::ObProp(PropKey::Fp(FpProp::AudioDelay)),
+        )
     );
 }
 

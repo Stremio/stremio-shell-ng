@@ -190,6 +190,7 @@ stringable!(IntProp);
 #[serde(try_from = "String", into = "String")]
 #[display(style = "kebab-case")]
 pub enum FpProp {
+    AudioDelay,
     TimePos,
     Mute,
     Volume,
