@@ -42,6 +42,36 @@ begin
     (CompareText(Command, ExpandConstant('"{app}\{#MyAppExeName}" "%1"')) = 0);
 end;
 
+{ The program a class's open command points at, or '' when it can't be read. }
+function HandlerTarget(const Name: String): String;
+var
+  Command: String;
+begin
+  Result := '';
+  if not RegQueryStringValue(HKCR, Name + '\shell\open\command', '', Command) then
+    Exit;
+  Command := Trim(Command);
+  if (Length(Command) > 1) and (Command[1] = '"') then
+  begin
+    Delete(Command, 1, 1);
+    if Pos('"', Command) > 0 then
+      Result := Copy(Command, 1, Pos('"', Command) - 1);
+  end;
+end;
+
+{ A handler left behind by an older Stremio (Stremio 4's stremio.exe, or a
+  previous Stremio 5 path) or one whose program no longer exists. Leaving it
+  in place means stremio:// install links silently do nothing. }
+function IsStaleOrStremio(const Name: String): Boolean;
+var
+  Target: String;
+begin
+  Target := HandlerTarget(Name);
+  Result := (Target <> '') and ((not FileExists(Target))
+    or (CompareText(ExtractFileName(Target), 'stremio.exe') = 0)
+    or (CompareText(ExtractFileName(Target), '{#MyAppExeName}') = 0));
+end;
+
 procedure RemoveOwnedClass(const Name: String);
 begin
   if OwnsClass(Name) then
@@ -53,7 +83,7 @@ var
   Key: String;
 begin
   { Existing defaults belong to the user. Do not replace another handler. }
-  if RegKeyExists(HKCR, Scheme) and not OwnsClass(Scheme) then
+  if RegKeyExists(HKCR, Scheme) and not OwnsClass(Scheme) and not IsStaleOrStremio(Scheme) then
     Exit;
   Key := 'Software\Classes\' + Scheme;
   RegWriteStringValue(HKCU, Key, '', Description);
