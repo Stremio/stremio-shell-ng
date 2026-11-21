@@ -86,7 +86,7 @@ fn ended_tokens() {
         Token::Str("message"),
         Token::Str("Unknown error"),
         Token::Str("critical"),
-        Token::Bool(false),
+        Token::Bool(true),
         Token::StructEnd,
         Token::StructEnd,
     ];
@@ -100,11 +100,11 @@ fn ended_tokens() {
         Token::StructEnd,
     ];
     assert_tokens(
-        &PlayerEnded::from_end_reason(mpv_end_file_reason::Error),
+        &PlayerEnded::from_end_reason(mpv_end_file_reason::Error, "Unknown error"),
         &error_tokens,
     );
     assert_tokens(
-        &PlayerEnded::from_end_reason(mpv_end_file_reason::Quit),
+        &PlayerEnded::from_end_reason(mpv_end_file_reason::Quit, ""),
         &tokens,
     );
     let eof_tokens: [Token; 4] = [
@@ -117,7 +117,7 @@ fn ended_tokens() {
         Token::StructEnd,
     ];
     assert_tokens(
-        &PlayerEnded::from_end_reason(mpv_end_file_reason::Eof),
+        &PlayerEnded::from_end_reason(mpv_end_file_reason::Eof, ""),
         &eof_tokens,
     );
     let stop_tokens: [Token; 4] = [
@@ -130,7 +130,7 @@ fn ended_tokens() {
         Token::StructEnd,
     ];
     assert_tokens(
-        &PlayerEnded::from_end_reason(mpv_end_file_reason::Stop),
+        &PlayerEnded::from_end_reason(mpv_end_file_reason::Stop, ""),
         &stop_tokens,
     );
 }
