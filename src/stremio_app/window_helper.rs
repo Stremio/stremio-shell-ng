@@ -4,14 +4,16 @@ use winapi::shared::minwindef::DWORD;
 use winapi::shared::windef::HWND;
 use winapi::um::dwmapi::DwmSetWindowAttribute;
 use winapi::um::winuser::{
-    GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowRect,
-    IsIconic, IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA, SetWindowPlacement,
-    SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
-    WINDOWPLACEMENT, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE,
-    WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_THICKFRAME,
+    GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowPlacement,
+    GetWindowRect, IsIconic, IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA,
+    SetWindowPlacement, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST,
+    HWND_TOPMOST, MONITORINFO, MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, WINDOWPLACEMENT, WS_CAPTION,
+    WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
+    WS_THICKFRAME,
 };
 
+const MINI_PLAYER_MARGIN: i32 = 24;
 const DWMWA_CAPTION_COLOR: DWORD = 35;
 const DWMWA_TEXT_COLOR: DWORD = 36;
 const STREMIO_CAPTION_COLOR: DWORD = colorref(0x15, 0x12, 0x2b);
@@ -38,6 +40,9 @@ pub struct WindowStyle {
     pub size: (i32, i32),
     pub style: i32,
     pub ex_style: i32,
+    pub mini_player: bool,
+    normal_placement: Option<WINDOWPLACEMENT>,
+    mini_player_rect: Option<(i32, i32, i32, i32)>,
 }
 
 impl WindowStyle {
@@ -194,9 +199,68 @@ impl WindowStyle {
         }
         self.ex_style = unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) };
     }
+    pub fn set_mini_player(&mut self, hwnd: HWND, enabled: bool) {
+        if self.mini_player == enabled || self.full_screen {
+            return;
+        }
+        unsafe {
+            if enabled {
+                let mut placement: WINDOWPLACEMENT = mem::zeroed();
+                placement.length = mem::size_of::<WINDOWPLACEMENT>() as u32;
+                if GetWindowPlacement(hwnd, &mut placement) == 0 {
+                    return;
+                }
+                self.normal_placement = Some(placement);
+                self.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
+                let (x, y, width, height) = self
+                    .mini_player_rect
+                    .unwrap_or_else(|| default_mini_player_rect(hwnd));
+                ShowWindow(hwnd, SW_RESTORE);
+                SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_FRAMECHANGED);
+            } else {
+                let mut rect = mem::zeroed();
+                if GetWindowRect(hwnd, &mut rect) != 0 && IsIconic(hwnd) == 0 {
+                    self.mini_player_rect = Some((
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                    ));
+                }
+                let topmost = if self.ex_style as u32 & WS_EX_TOPMOST == WS_EX_TOPMOST {
+                    HWND_TOPMOST
+                } else {
+                    HWND_NOTOPMOST
+                };
+                SetWindowPos(hwnd, topmost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                if let Some(placement) = self.normal_placement.take() {
+                    SetWindowPlacement(hwnd, &placement);
+                }
+            }
+        }
+        self.mini_player = enabled;
+    }
     pub fn set_active(&mut self, hwnd: HWND) {
         unsafe {
             SetForegroundWindow(hwnd);
         }
+    }
+}
+
+fn default_mini_player_rect(hwnd: HWND) -> (i32, i32, i32, i32) {
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut monitor_info: MONITORINFO = mem::zeroed();
+        monitor_info.cbSize = mem::size_of_val(&monitor_info) as u32;
+        GetMonitorInfoA(monitor, &mut monitor_info);
+        let work = monitor_info.rcWork;
+        let width = (work.right - work.left) * 30 / 100;
+        let height = width * 9 / 16;
+        (
+            work.right - width - MINI_PLAYER_MARGIN,
+            work.bottom - height - MINI_PLAYER_MARGIN,
+            width,
+            height,
+        )
     }
 }

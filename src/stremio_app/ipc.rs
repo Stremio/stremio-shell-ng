@@ -104,6 +104,12 @@ impl RPCResponse {
                         ],
                         vec![
                             "".to_string(),
+                            "pictureInPicture".to_string(),
+                            "".to_string(),
+                            "true".to_string(),
+                        ],
+                        vec![
+                            "".to_string(),
                             "nativeAssSubtitles".to_string(),
                             "".to_string(),
                             "true".to_string(),
@@ -152,6 +158,9 @@ impl RPCResponse {
         Self::response_message(Some(json!(["discord-status", {
             "connected": connected,
         }])))
+    }
+    pub fn pip_change(enabled: bool) -> String {
+        Self::response_message(Some(json!(["win-pip-changed", { "enabled": enabled }])))
     }
     pub fn media_key(action: &str) -> String {
         Self::response_message(Some(json!(["media-key", action])))
