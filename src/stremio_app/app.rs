@@ -495,6 +495,8 @@ impl MainWindow {
                     }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
+                        *requested_mini_player.lock().unwrap() = Some(false);
+                        mini_player_sender.notice();
                         send_webui_event(&webui_events, &webui_sender, WebUiEvent::Ready);
                         hide_splash_sender.notice();
                         web_tx_web
@@ -900,6 +902,7 @@ impl MainWindow {
         if left_full_screen {
             self.transmit_window_visibility_change();
         }
+        self.transmit_window_state_change();
         self.transmit_mini_player_change(enabled);
     }
     fn on_set_interface_scale_notice(&self) {
