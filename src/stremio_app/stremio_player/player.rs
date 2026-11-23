@@ -1,5 +1,6 @@
 use crate::stremio_app::gpu_video_processing;
 use crate::stremio_app::ipc;
+use crate::stremio_app::mpv_config;
 use crate::stremio_app::RPCResponse;
 use flume::{Receiver, Sender};
 use libmpv2::{events::Event, Format, Mpv, SetData};
@@ -419,6 +420,8 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         set_property!("wid", window_handle as i64);
         set_property!("title", "Stremio");
         set_property!("audio-client-name", "Stremio");
+        set_property!("media-controls", "yes");
+        set_property!("audio-fallback-to-null", "yes");
         set_property!("terminal", "yes");
         #[cfg(debug_assertions)]
         set_property!("msg-level", "all=no,cplayer=debug");
@@ -429,7 +432,7 @@ fn create_mpv(window_handle: HWND) -> Mpv {
         // `%23%` escapes the 23-byte HTTP status list as one mpv option value.
         set_property!(
             "stream-lavf-o",
-            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_on_http_error=%23%408,429,500,502,503,504,reconnect_delay_max=15"
+            "reconnect=1,reconnect_on_network_error=1,reconnect_on_http_error=%23%408,429,500,502,503,504,reconnect_delay_max=15"
         );
         // gpu-next: libplacebo VO with modern HDR tone-mapping; gpu, is the fallback.
         set_property!("vo", "gpu-next,gpu,");
@@ -456,6 +459,13 @@ fn create_mpv(window_handle: HWND) -> Mpv {
                 eprintln!("mpv: cannot set {name}={value}: {error:?}");
             }
         }
+        if let Some(path) = mpv_config::path() {
+            if let Err(error) = initializer.load_config(&path) {
+                eprintln!("mpv: cannot load {path}: {error:?}");
+            }
+        }
+        set_property!("keep-open", "no");
+        set_property!("loop-file", "no");
         Ok(())
     });
     mpv.expect("cannot build MPV")
@@ -682,6 +692,9 @@ fn create_event_thread(
         mpv_event_client
             .disable_deprecated_events()
             .expect("failed to disable deprecated MPV events");
+        mpv_event_client
+            .observe_property("audio-device-list", Format::String, 0)
+            .expect("failed to observe MPV audio devices");
 
         // -- Event handler loop --
 
@@ -701,6 +714,22 @@ fn create_event_thread(
                 // dummy event received (may be created on a wake up call or on timeout)
                 None => continue,
             };
+
+            if matches!(
+                &event,
+                Event::PropertyChange {
+                    name: "audio-device-list",
+                    ..
+                }
+            ) {
+                let current_ao = mpv_event_client.get_property::<String>("current-ao");
+                if matches!(current_ao.as_deref(), Ok("null")) {
+                    if let Err(error) = mpv_event_client.command("ao-reload", &[]) {
+                        eprintln!("failed to reload MPV audio output: '{error:#}'");
+                    }
+                }
+                continue;
+            }
 
             if matches!(&event, Event::StartFile) {
                 video_ready_state

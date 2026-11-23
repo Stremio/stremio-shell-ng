@@ -172,6 +172,7 @@ pub enum BoolProp {
     Seeking,
     EofReached,
     Keepaspect,
+    SubBold,
 }
 stringable!(BoolProp);
 // Int
@@ -208,6 +209,7 @@ stringable!(FpProp);
 #[display(style = "kebab-case")]
 pub enum StrProp {
     FfmpegVersion,
+    ForceMediaTitle,
     Hwdec,
     InputDefaultBindings,
     InputVoKeyboard,

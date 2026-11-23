@@ -4,6 +4,7 @@ use rand::Rng;
 use serde_json;
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     io::Read,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
@@ -13,8 +14,16 @@ use std::{
     thread, time,
 };
 use url::Url;
-use winapi::shared::windef::HWND;
-use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
+use winapi::{
+    shared::windef::{HWND, RECT},
+    um::{
+        winbase::CREATE_BREAKAWAY_FROM_JOB,
+        winuser::{
+            GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER,
+            WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
+        },
+    },
+};
 
 use crate::stremio_app::{
     constants::{
@@ -22,6 +31,7 @@ use crate::stremio_app::{
         WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
+    mpv_config,
     mpv_hwnd::find_mpv_child_hwnd,
     pip_window::PipWindow,
     splash::SplashImage,
@@ -37,6 +47,26 @@ use crate::stremio_app::{
 use super::discord::DiscordRpc;
 use super::stremio_server::{ServerEvent, StremioServer};
 
+const WEBUI_RETRY_DELAYS_SECS: [u64; 2] = [2, 5];
+const WEBUI_READY_TIMEOUT_SECS: u64 = 30;
+const WEBUI_RETRY_READY_TIMEOUT_SECS: u64 = 15;
+const WEBUI_UNREACHABLE: &str = "Stremio couldn't load its interface. \
+    Check your internet connection, VPN or firewall, then click Retry.";
+
+pub enum WebUiEvent {
+    Ready,
+    LoadFailed(String),
+    Timeout(u64),
+    Retry(u64),
+}
+
+type WebUiEvents = Arc<Mutex<VecDeque<WebUiEvent>>>;
+
+fn send_webui_event(events: &WebUiEvents, notice: &nwg::NoticeSender, event: WebUiEvent) {
+    events.lock().unwrap().push_back(event);
+    notice.notice();
+}
+
 pub enum OpenRequest {
     Input(String),
     Ready,
@@ -46,7 +76,7 @@ pub enum OpenRequest {
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub command: String,
-    pub commands_path: Option<String>,
+    pub commands_server: RefCell<Option<PipeServer>>,
     pub webui_url: String,
     pub no_splash: bool,
     pub dev_tools: bool,
@@ -61,16 +91,27 @@ pub struct MainWindow {
     pub pip_active: Cell<bool>,
     pub mpv_child_hwnd: Cell<Option<HWND>>,
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
+    pub requested_mpv_config: Arc<Mutex<Option<u64>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
     pub saved_window_style: RefCell<WindowStyle>,
     pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
     pub local_server_url: Arc<Mutex<Option<String>>>,
+    pub webui_events: WebUiEvents,
+    pub webui_ready: Cell<bool>,
+    pub webui_retries: Cell<usize>,
+    pub webui_generation: Cell<u64>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
     pub window_icon: nwg::Icon,
     #[nwg_resource(title: "Choose cache folder", action: nwg::FileDialogAction::OpenDirectory)]
     pub cache_directory_picker: nwg::FileDialog,
+    #[nwg_resource(
+        title: "Choose mpv configuration file",
+        action: nwg::FileDialogAction::Open,
+        filters: "mpv config(*.conf)|Any(*.*)"
+    )]
+    pub mpv_config_picker: nwg::FileDialog,
     #[nwg_control(icon: Some(&data.window_icon), title: APP_NAME, flags: "MAIN_WINDOW")]
     #[nwg_events(
         OnWindowClose: [Self::on_quit(SELF, EVT_DATA)],
@@ -122,6 +163,12 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
     pub cache_directory_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_mpv_config_notice])]
+    pub mpv_config_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_webui_notice])]
+    pub webui_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -167,6 +214,27 @@ impl MainWindow {
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
                 saved_style.set_title_bar_color(hwnd);
+                nwg::bind_raw_event_handler(&self.window.handle, 0x10001, |hwnd, msg, _w, l| {
+                    if msg != WM_DPICHANGED
+                        || unsafe { GetWindowLongA(hwnd, GWL_STYLE) } as u32 & WS_CAPTION == 0
+                    {
+                        return None;
+                    }
+                    let rect = unsafe { &*(l as *const RECT) };
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            rect.left,
+                            rect.top,
+                            rect.right - rect.left,
+                            rect.bottom - rect.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    Some(0)
+                })
+                .ok();
                 if let Some(window_settings) = WindowSettings::load() {
                     saved_style
                         .restore_window_placement(hwnd, window_settings.to_window_placement());
@@ -241,13 +309,6 @@ impl MainWindow {
             }
         });
 
-        // Single application IPC
-        let socket_path = Path::new(
-            self.commands_path
-                .as_ref()
-                .expect("Cannot initialie the single application IPC"),
-        );
-
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;
         let release_candidate = self.release_candidate;
@@ -297,7 +358,8 @@ impl MainWindow {
             }
         }); // thread
 
-        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+        // Single application IPC
+        if let Some(mut listener) = self.commands_server.borrow_mut().take() {
             let focus_sender = self.focus_notice.sender();
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
@@ -334,8 +396,12 @@ impl MainWindow {
         let requested_pip = self.requested_pip.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
+        let requested_mpv_config = self.requested_mpv_config.clone();
+        let mpv_config_sender = self.mpv_config_notice.sender();
         let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
+        let webui_events = self.webui_events.clone();
+        let webui_sender = self.webui_notice.sender();
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -348,7 +414,10 @@ impl MainWindow {
                     // The handshake. Here we send some useful data to the WEB UI
                     None if msg.is_handshake() => {
                         web_tx_web
-                            .send(RPCResponse::get_handshake(local_server_url.as_deref()))
+                            .send(RPCResponse::get_handshake(
+                                local_server_url.as_deref(),
+                                mpv_config::path().as_deref(),
+                            ))
                             .ok();
                     }
                     Some("pick-cache-directory") => {
@@ -376,6 +445,40 @@ impl MainWindow {
                                 *pending = Some(request);
                                 cache_directory_sender.notice();
                             }
+                        }
+                    }
+                    Some("pick-mpv-config") => {
+                        if let Some(request_id) = msg
+                            .get_params()
+                            .and_then(|params| params.get("requestId"))
+                            .and_then(|value| value.as_u64())
+                        {
+                            let mut pending = requested_mpv_config.lock().unwrap();
+                            if pending.is_some() {
+                                web_tx_web
+                                    .send(RPCResponse::mpv_config_selected(
+                                        request_id,
+                                        Err("A file picker is already open".to_owned()),
+                                    ))
+                                    .ok();
+                            } else {
+                                *pending = Some(request_id);
+                                mpv_config_sender.notice();
+                            }
+                        }
+                    }
+                    Some("reset-mpv-config") => {
+                        if let Some(request_id) = msg
+                            .get_params()
+                            .and_then(|params| params.get("requestId"))
+                            .and_then(|value| value.as_u64())
+                        {
+                            let result = mpv_config::set("")
+                                .map(|_| mpv_config::path())
+                                .map_err(|error| error.to_string());
+                            web_tx_web
+                                .send(RPCResponse::mpv_config_selected(request_id, result))
+                                .ok();
                         }
                     }
                     Some("win-set-interface-scale") => {
@@ -409,6 +512,7 @@ impl MainWindow {
                     }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
+                        send_webui_event(&webui_events, &webui_sender, WebUiEvent::Ready);
                         hide_splash_sender.notice();
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
@@ -418,6 +522,16 @@ impl MainWindow {
                             .expect("Failed to send value to updater channel");
 
                         open_sender_web.send(OpenRequest::Ready).ok();
+                    }
+                    Some("app-load-error") => {
+                        if let Some(arg) = msg.get_params() {
+                            let detail = arg.as_str().unwrap_or_default().to_owned();
+                            send_webui_event(
+                                &webui_events,
+                                &webui_sender,
+                                WebUiEvent::LoadFailed(detail),
+                            );
+                        }
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -568,6 +682,8 @@ impl MainWindow {
         } else {
             self.webui_url.clone()
         };
+        self.webui_ready.set(false);
+        self.webui_retries.set(0);
         if let Err(error) = self.webview.navigate(endpoint) {
             self.splash_screen.hide();
             nwg::modal_error_message(
@@ -575,6 +691,99 @@ impl MainWindow {
                 "Cannot load Stremio Web UI",
                 &error.to_string(),
             );
+        } else {
+            self.start_webui_deadline();
+        }
+    }
+    fn start_webui_deadline(&self) {
+        let generation = self.webui_generation.get() + 1;
+        self.webui_generation.set(generation);
+        let timeout = if self.webui_retries.get() > 0 {
+            WEBUI_RETRY_READY_TIMEOUT_SECS
+        } else {
+            WEBUI_READY_TIMEOUT_SECS
+        };
+        let events = self.webui_events.clone();
+        let sender = self.webui_notice.sender();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_secs(timeout));
+            send_webui_event(&events, &sender, WebUiEvent::Timeout(generation));
+        });
+    }
+    fn retry_webui_silently(&self) -> bool {
+        let Some(&delay) = WEBUI_RETRY_DELAYS_SECS.get(self.webui_retries.get()) else {
+            return false;
+        };
+        self.webui_retries.set(self.webui_retries.get() + 1);
+        let generation = self.webui_generation.get() + 1;
+        self.webui_generation.set(generation);
+        let events = self.webui_events.clone();
+        let sender = self.webui_notice.sender();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_secs(delay));
+            send_webui_event(&events, &sender, WebUiEvent::Retry(generation));
+        });
+        true
+    }
+    fn retry_webui(&self) {
+        match self.webview.retry() {
+            Ok(()) => self.start_webui_deadline(),
+            Err(error) => self.show_webui_error(&error.to_string()),
+        }
+    }
+    fn show_webui_error(&self, details: &str) {
+        self.splash_screen.hide();
+        self.on_show();
+        let choice = nwg::modal_message(
+            &self.window,
+            &nwg::MessageParams {
+                title: "Stremio",
+                content: details,
+                buttons: nwg::MessageButtons::RetryCancel,
+                icons: nwg::MessageIcons::Error,
+            },
+        );
+        // The web UI can become ready while the dialog is open.
+        if self.webui_ready.get() {
+            return;
+        }
+        if choice == nwg::MessageChoice::Retry {
+            if !self.no_splash {
+                self.splash_screen.show();
+            }
+            self.retry_webui();
+        } else {
+            self.on_exit();
+        }
+    }
+    fn on_webui_notice(&self) {
+        let events: Vec<_> = self.webui_events.lock().unwrap().drain(..).collect();
+        for event in events {
+            let current = self.webui_generation.get();
+            match event {
+                WebUiEvent::Ready => {
+                    self.webui_ready.set(true);
+                    self.webui_retries.set(0);
+                }
+                _ if self.webui_ready.get() => {}
+                WebUiEvent::LoadFailed(detail) => {
+                    eprintln!("Web UI load error: {detail}");
+                    if !self.retry_webui_silently() {
+                        self.show_webui_error(&format!("{WEBUI_UNREACHABLE}\n\n{detail}"));
+                    }
+                }
+                WebUiEvent::Timeout(generation) if generation == current => {
+                    eprintln!("Web UI startup timed out");
+                    if self.webui_retries.get() > 0 || !self.retry_webui_silently() {
+                        self.show_webui_error(WEBUI_UNREACHABLE);
+                    }
+                }
+                WebUiEvent::Retry(generation) if generation == current => {
+                    eprintln!("Retrying the web UI (attempt {})", self.webui_retries.get());
+                    self.retry_webui();
+                }
+                WebUiEvent::Timeout(_) | WebUiEvent::Retry(_) => {}
+            }
         }
     }
     fn on_server_notice(&self) {
@@ -614,7 +823,17 @@ impl MainWindow {
     }
     fn on_min_max(&self, data: &nwg::EventData) {
         let data = data.on_min_max();
-        data.set_min_size(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT);
+        // nwg scales by the system DPI, but per-monitor v2 needs the window's monitor DPI
+        let system_dpi = unsafe { nwg::dpi() };
+        let dpi = self
+            .window
+            .handle
+            .hwnd()
+            .map_or(system_dpi, |hwnd| unsafe { GetDpiForWindow(hwnd) } as i32);
+        data.set_min_size(
+            WINDOW_MIN_WIDTH * dpi / system_dpi,
+            WINDOW_MIN_HEIGHT * dpi / system_dpi,
+        );
     }
     fn on_paint(&self) {
         if !self.splash_screen.visible() {
@@ -772,6 +991,38 @@ impl MainWindow {
                     request.request_id,
                     result,
                 ))
+                .ok();
+        }
+    }
+    fn on_mpv_config_notice(&self) {
+        let request_id = *self.requested_mpv_config.lock().unwrap();
+        let Some(request_id) = request_id else { return };
+        let directory = mpv_config::path()
+            .and_then(|path| Path::new(&path).parent().map(Path::to_path_buf))
+            .or_else(|| dirs::config_dir().map(|dir| dir.join("mpv")));
+        if let Some(directory) = directory.as_deref().and_then(Path::to_str) {
+            self.mpv_config_picker.set_default_folder(directory).ok();
+        }
+        let result = if self.mpv_config_picker.run(Some(&self.window)) {
+            self.mpv_config_picker
+                .get_selected_item()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    path.into_string()
+                        .map_err(|_| "The selected file path is not valid Unicode".to_owned())
+                })
+                .and_then(|path| {
+                    mpv_config::set(&path)
+                        .map(|_| Some(path))
+                        .map_err(|error| error.to_string())
+                })
+        } else {
+            Ok(mpv_config::path())
+        };
+        self.requested_mpv_config.lock().unwrap().take();
+        if let Some((web_tx, _)) = self.webview.channel.borrow().as_ref() {
+            web_tx
+                .send(RPCResponse::mpv_config_selected(request_id, result))
                 .ok();
         }
     }

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 use urlencoding::decode;
-use webview2::{check_hresult, Controller};
+use webview2::{check_hresult, Controller, WebErrorStatus};
 use webview2_sys::ICoreWebView2Settings3;
 use winapi::shared::windef::HWND;
 use winapi::um::winuser::{
@@ -43,6 +43,20 @@ impl WebView {
         *self.endpoint.borrow_mut() = Some(endpoint.clone());
         if let Some(controller) = self.controller.get() {
             Self::navigate_webview(&controller.get_webview()?, &endpoint)?;
+        }
+        Ok(())
+    }
+
+    pub fn retry(&self) -> webview2::Result<()> {
+        if let (Some(controller), Some(endpoint)) =
+            (self.controller.get(), self.endpoint.borrow().as_deref())
+        {
+            let webview = controller.get_webview()?;
+            if webview.get_source()? == endpoint {
+                webview.reload()?;
+            } else {
+                webview.navigate(endpoint)?;
+            }
         }
         Ok(())
     }
@@ -181,6 +195,17 @@ impl PartialUi for WebView {
                                 if let Err(e) = open::that(final_url) {
                                     eprintln!("Failed to open URL: {e}");
                                 }
+                            }
+                        }
+                        Ok(())
+                    })?;
+
+                    let load_error_tx = tx_web.clone();
+                    webview.add_navigation_completed(move |_webview, event| {
+                        if !event.get_is_success()? {
+                            let status = event.get_web_error_status()?;
+                            if status != WebErrorStatus::OperationCanceled {
+                                load_error_tx.send(ipc::RPCResponse::response_message(Some(json!(["app-load-error", format!("{status:?}")])))).ok();
                             }
                         }
                         Ok(())
