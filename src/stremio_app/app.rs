@@ -833,8 +833,9 @@ impl MainWindow {
         if self
             .saved_window_style
             .try_borrow()
-            .map(|style| style.full_screen || style.mini_player)
+            .map(|style| style.full_screen)
             .unwrap_or(false)
+            || self.mini_player_active.get()
         {
             return;
         }
@@ -853,7 +854,7 @@ impl MainWindow {
                     .unwrap()
                     .take()
                     .unwrap_or(!saved_style.full_screen);
-                let left_mini_player = target && saved_style.mini_player;
+                let left_mini_player = target && self.mini_player_active.get();
                 if left_mini_player {
                     saved_style.set_mini_player(hwnd, false);
                     self.mini_player_active.set(false);
@@ -891,11 +892,8 @@ impl MainWindow {
         if left_full_screen {
             saved_style.set_full_screen(hwnd, false);
         }
-        if target {
-            self.mini_player_active.set(true);
-        }
-        saved_style.set_mini_player(hwnd, target);
-        let enabled = saved_style.mini_player;
+        self.mini_player_active.set(target);
+        let enabled = saved_style.set_mini_player(hwnd, target);
         self.mini_player_active.set(enabled);
         self.tray.tray_topmost.set_enabled(!enabled);
         drop(saved_style);

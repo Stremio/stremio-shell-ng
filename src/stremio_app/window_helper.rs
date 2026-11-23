@@ -40,7 +40,6 @@ pub struct WindowStyle {
     pub size: (i32, i32),
     pub style: i32,
     pub ex_style: i32,
-    pub mini_player: bool,
     normal_placement: Option<WINDOWPLACEMENT>,
     mini_player_rect: Option<(i32, i32, i32, i32)>,
 }
@@ -199,16 +198,16 @@ impl WindowStyle {
         }
         self.ex_style = unsafe { GetWindowLongA(hwnd, GWL_EXSTYLE) };
     }
-    pub fn set_mini_player(&mut self, hwnd: HWND, enabled: bool) {
-        if self.mini_player == enabled || self.full_screen {
-            return;
+    pub fn set_mini_player(&mut self, hwnd: HWND, enabled: bool) -> bool {
+        if self.normal_placement.is_some() == enabled || self.full_screen {
+            return self.normal_placement.is_some();
         }
         unsafe {
             if enabled {
                 let mut placement: WINDOWPLACEMENT = mem::zeroed();
                 placement.length = mem::size_of::<WINDOWPLACEMENT>() as u32;
                 if GetWindowPlacement(hwnd, &mut placement) == 0 {
-                    return;
+                    return false;
                 }
                 self.normal_placement = Some(placement);
                 self.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
@@ -238,7 +237,7 @@ impl WindowStyle {
                 }
             }
         }
-        self.mini_player = enabled;
+        enabled
     }
     pub fn set_active(&mut self, hwnd: HWND) {
         unsafe {
