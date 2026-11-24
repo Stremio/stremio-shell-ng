@@ -1025,6 +1025,11 @@ impl MainWindow {
         if let nwg::EventData::OnWindowClose(data) = data {
             data.close(false);
         }
+        if self.mini_player_active.get() {
+            *self.requested_mini_player.lock().unwrap() = Some(false);
+            self.on_mini_player_notice();
+            return;
+        }
         self.save_window_settings();
         self.window.set_visible(false);
         self.tray.tray_show_hide.set_checked(self.window.visible());
