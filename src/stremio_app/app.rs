@@ -19,8 +19,8 @@ use winapi::{
     um::{
         winbase::CREATE_BREAKAWAY_FROM_JOB,
         winuser::{
-            GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER,
-            WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
+            AdjustWindowRectExForDpi, GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_EXSTYLE,
+            GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
         },
     },
 };
@@ -815,10 +815,34 @@ impl MainWindow {
             .handle
             .hwnd()
             .map_or(system_dpi, |hwnd| unsafe { GetDpiForWindow(hwnd) } as i32);
-        let (min_width, min_height) = if self.mini_player_active.get() {
-            (MINI_PLAYER_MIN_WIDTH, MINI_PLAYER_MIN_HEIGHT)
-        } else {
-            (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        let mini_player_hwnd = self
+            .window
+            .handle
+            .hwnd()
+            .filter(|_| self.mini_player_active.get());
+        let (min_width, min_height) = match mini_player_hwnd {
+            Some(hwnd) => {
+                let mut rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: MINI_PLAYER_MIN_WIDTH * dpi / 96,
+                    bottom: MINI_PLAYER_MIN_HEIGHT * dpi / 96,
+                };
+                unsafe {
+                    AdjustWindowRectExForDpi(
+                        &mut rect,
+                        GetWindowLongA(hwnd, GWL_STYLE) as u32,
+                        0,
+                        GetWindowLongA(hwnd, GWL_EXSTYLE) as u32,
+                        dpi as u32,
+                    );
+                }
+                (
+                    (rect.right - rect.left) * 96 / dpi,
+                    (rect.bottom - rect.top) * 96 / dpi,
+                )
+            }
+            None => (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
         };
         data.set_min_size(min_width * dpi / system_dpi, min_height * dpi / system_dpi);
     }

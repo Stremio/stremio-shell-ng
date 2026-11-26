@@ -10,7 +10,7 @@ use winapi::um::winuser::{
     HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO, MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN,
     SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNORMAL, WINDOWPLACEMENT, WS_CAPTION,
     WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
-    WS_THICKFRAME,
+    WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 const MINI_PLAYER_MARGIN: i32 = 24;
@@ -42,6 +42,7 @@ pub struct WindowStyle {
     pub ex_style: i32,
     normal_placement: Option<WINDOWPLACEMENT>,
     mini_player_rect: Option<(i32, i32, i32, i32)>,
+    mini_player_maximize_box: bool,
 }
 
 impl WindowStyle {
@@ -219,6 +220,9 @@ impl WindowStyle {
                 self.normal_placement = Some(placement);
                 self.ex_style = GetWindowLongA(hwnd, GWL_EXSTYLE);
                 ShowWindow(hwnd, SW_SHOWNORMAL);
+                let style = GetWindowLongA(hwnd, GWL_STYLE);
+                self.mini_player_maximize_box = style as u32 & WS_MAXIMIZEBOX == WS_MAXIMIZEBOX;
+                SetWindowLongA(hwnd, GWL_STYLE, style & !(WS_MAXIMIZEBOX as i32));
                 SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_FRAMECHANGED);
             } else {
                 let mut rect = mem::zeroed();
@@ -236,7 +240,19 @@ impl WindowStyle {
                 } else {
                     HWND_NOTOPMOST
                 };
-                SetWindowPos(hwnd, topmost, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                if self.mini_player_maximize_box {
+                    let style = GetWindowLongA(hwnd, GWL_STYLE);
+                    SetWindowLongA(hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX as i32);
+                }
+                SetWindowPos(
+                    hwnd,
+                    topmost,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
+                );
                 if let Some(mut placement) = self.normal_placement.take() {
                     if visible {
                         ShowWindow(hwnd, SW_SHOWNORMAL);
