@@ -19,17 +19,16 @@ use winapi::{
     um::{
         winbase::CREATE_BREAKAWAY_FROM_JOB,
         winuser::{
-            AdjustWindowRectExForDpi, GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_EXSTYLE,
-            GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
+            GetDpiForWindow, GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER,
+            WM_DPICHANGED, WS_CAPTION, WS_EX_TOPMOST,
         },
     },
 };
 
 use crate::stremio_app::{
     constants::{
-        safe_url, web_endpoint_with_streaming_server, APP_NAME, MINI_PLAYER_MIN_HEIGHT,
-        MINI_PLAYER_MIN_WIDTH, UPDATE_ENDPOINT, UPDATE_INTERVAL, WEB_ENDPOINT, WINDOW_MIN_HEIGHT,
-        WINDOW_MIN_WIDTH,
+        safe_url, web_endpoint_with_streaming_server, APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL,
+        WEB_ENDPOINT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
     },
     ipc::{CacheDirectoryRequest, RPCRequest, RPCResponse},
     mpv_config,
@@ -38,7 +37,7 @@ use crate::stremio_app::{
     stremio_wevbiew::WebView,
     systray::SystemTray,
     updater,
-    window_helper::WindowStyle,
+    window_helper::{mini_player_min_size, WindowStyle},
     window_settings::WindowSettings,
     PipeServer,
 };
@@ -822,25 +821,8 @@ impl MainWindow {
             .filter(|_| self.mini_player_active.get());
         let (min_width, min_height) = match mini_player_hwnd {
             Some(hwnd) => {
-                let mut rect = RECT {
-                    left: 0,
-                    top: 0,
-                    right: MINI_PLAYER_MIN_WIDTH * dpi / 96,
-                    bottom: MINI_PLAYER_MIN_HEIGHT * dpi / 96,
-                };
-                unsafe {
-                    AdjustWindowRectExForDpi(
-                        &mut rect,
-                        GetWindowLongA(hwnd, GWL_STYLE) as u32,
-                        0,
-                        GetWindowLongA(hwnd, GWL_EXSTYLE) as u32,
-                        dpi as u32,
-                    );
-                }
-                (
-                    (rect.right - rect.left) * 96 / dpi,
-                    (rect.bottom - rect.top) * 96 / dpi,
-                )
+                let (width, height) = mini_player_min_size(hwnd);
+                (width * 96 / dpi, height * 96 / dpi)
             }
             None => (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
         };

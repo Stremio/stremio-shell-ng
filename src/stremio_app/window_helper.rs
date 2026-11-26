@@ -1,17 +1,19 @@
 use std::{cmp, mem};
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::DWORD;
-use winapi::shared::windef::HWND;
+use winapi::shared::windef::{HWND, RECT};
 use winapi::um::dwmapi::DwmSetWindowAttribute;
 use winapi::um::winuser::{
-    GetForegroundWindow, GetMonitorInfoA, GetSystemMetrics, GetWindowLongA, GetWindowPlacement,
-    GetWindowRect, IsIconic, IsWindowVisible, IsZoomed, MonitorFromWindow, SetForegroundWindow,
-    SetWindowLongA, SetWindowPlacement, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-    HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO, MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNORMAL, WINDOWPLACEMENT, WS_CAPTION,
-    WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE,
-    WS_MAXIMIZEBOX, WS_THICKFRAME,
+    AdjustWindowRectExForDpi, GetDpiForWindow, GetForegroundWindow, GetMonitorInfoA,
+    GetSystemMetrics, GetWindowLongA, GetWindowPlacement, GetWindowRect, IsIconic, IsWindowVisible,
+    IsZoomed, MonitorFromWindow, SetForegroundWindow, SetWindowLongA, SetWindowPlacement,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST, HWND_TOPMOST, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, SM_CXSCREEN, SM_CYSCREEN, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE,
+    SW_HIDE, SW_SHOWNORMAL, WINDOWPLACEMENT, WS_CAPTION, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME,
+    WS_EX_STATICEDGE, WS_EX_TOPMOST, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
+
+use crate::stremio_app::constants::{MINI_PLAYER_MIN_HEIGHT, MINI_PLAYER_MIN_WIDTH};
 
 const MINI_PLAYER_MARGIN: i32 = 24;
 const DWMWA_CAPTION_COLOR: DWORD = 35;
@@ -281,13 +283,34 @@ fn default_mini_player_rect(hwnd: HWND) -> Option<(i32, i32, i32, i32)> {
             return None;
         }
         let work = monitor_info.rcWork;
-        let width = (work.right - work.left) * 30 / 100;
-        let height = width * 9 / 16;
+        let (min_width, min_height) = mini_player_min_size(hwnd);
+        let width = cmp::max((work.right - work.left) * 30 / 100, min_width);
+        let height = cmp::max(width * 9 / 16, min_height);
         Some((
             work.right - width - MINI_PLAYER_MARGIN,
             work.bottom - height - MINI_PLAYER_MARGIN,
             width,
             height,
         ))
+    }
+}
+
+pub fn mini_player_min_size(hwnd: HWND) -> (i32, i32) {
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd) as i32;
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: MINI_PLAYER_MIN_WIDTH * dpi / 96,
+            bottom: MINI_PLAYER_MIN_HEIGHT * dpi / 96,
+        };
+        AdjustWindowRectExForDpi(
+            &mut rect,
+            GetWindowLongA(hwnd, GWL_STYLE) as u32,
+            0,
+            GetWindowLongA(hwnd, GWL_EXSTYLE) as u32,
+            dpi as u32,
+        );
+        (rect.right - rect.left, rect.bottom - rect.top)
     }
 }
