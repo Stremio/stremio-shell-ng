@@ -37,7 +37,7 @@ use crate::stremio_app::{
     stremio_wevbiew::WebView,
     systray::SystemTray,
     updater,
-    window_helper::WindowStyle,
+    window_helper::{mini_player_min_size, WindowStyle},
     window_settings::WindowSettings,
     PipeServer,
 };
@@ -84,6 +84,8 @@ pub struct MainWindow {
     pub release_candidate: bool,
     pub autoupdater_setup_file: Arc<Mutex<Option<PathBuf>>>,
     pub requested_fullscreen: Arc<Mutex<Option<bool>>>,
+    pub requested_mini_player: Arc<Mutex<Option<bool>>>,
+    pub mini_player_active: Cell<bool>,
     pub requested_cache_directory: Arc<Mutex<Option<CacheDirectoryRequest>>>,
     pub requested_mpv_config: Arc<Mutex<Option<u64>>>,
     pub requested_interface_scale: Arc<Mutex<Option<u64>>>,
@@ -138,6 +140,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_toggle_fullscreen_notice] )]
     pub toggle_fullscreen_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_mini_player_notice] )]
+    pub mini_player_notice: nwg::Notice,
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_set_interface_scale_notice] )]
     pub set_interface_scale_notice: nwg::Notice,
@@ -359,6 +364,7 @@ impl MainWindow {
         }); // thread
 
         let toggle_fullscreen_sender = self.toggle_fullscreen_notice.sender();
+        let mini_player_sender = self.mini_player_notice.sender();
         let set_interface_scale_sender = self.set_interface_scale_notice.sender();
         let quit_sender = self.quit_notice.sender();
         let hide_splash_sender = self.hide_splash_notice.sender();
@@ -367,6 +373,7 @@ impl MainWindow {
 
         let discord_rpc = DiscordRpc::new(web_tx.clone());
         let requested_fullscreen = self.requested_fullscreen.clone();
+        let requested_mini_player = self.requested_mini_player.clone();
         let requested_cache_directory = self.requested_cache_directory.clone();
         let cache_directory_sender = self.cache_directory_notice.sender();
         let requested_mpv_config = self.requested_mpv_config.clone();
@@ -475,8 +482,20 @@ impl MainWindow {
                             toggle_fullscreen_sender.notice();
                         }
                     }
+                    Some("win-set-pip") => {
+                        if let Some(enabled) = msg
+                            .get_params()
+                            .and_then(|params| params.get("enabled"))
+                            .and_then(|value| value.as_bool())
+                        {
+                            *requested_mini_player.lock().unwrap() = Some(enabled);
+                            mini_player_sender.notice();
+                        }
+                    }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
+                        *requested_mini_player.lock().unwrap() = Some(false);
+                        mini_player_sender.notice();
                         send_webui_event(&webui_events, &webui_sender, WebUiEvent::Ready);
                         hide_splash_sender.notice();
                         web_tx_web
@@ -795,10 +814,19 @@ impl MainWindow {
             .handle
             .hwnd()
             .map_or(system_dpi, |hwnd| unsafe { GetDpiForWindow(hwnd) } as i32);
-        data.set_min_size(
-            WINDOW_MIN_WIDTH * dpi / system_dpi,
-            WINDOW_MIN_HEIGHT * dpi / system_dpi,
-        );
+        let mini_player_hwnd = self
+            .window
+            .handle
+            .hwnd()
+            .filter(|_| self.mini_player_active.get());
+        let (min_width, min_height) = match mini_player_hwnd {
+            Some(hwnd) => {
+                let (width, height) = mini_player_min_size(hwnd);
+                (width * 96 / dpi, height * 96 / dpi)
+            }
+            None => (WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
+        };
+        data.set_min_size(min_width * dpi / system_dpi, min_height * dpi / system_dpi);
     }
     fn on_paint(&self) {
         if !self.splash_screen.visible() {
@@ -815,6 +843,7 @@ impl MainWindow {
             .try_borrow()
             .map(|style| style.full_screen)
             .unwrap_or(false)
+            || self.mini_player_active.get()
         {
             return;
         }
@@ -833,7 +862,15 @@ impl MainWindow {
                     .unwrap()
                     .take()
                     .unwrap_or(!saved_style.full_screen);
+                let left_mini_player = target && self.mini_player_active.get();
+                if left_mini_player {
+                    saved_style.set_mini_player(hwnd, false);
+                    self.mini_player_active.set(false);
+                }
                 saved_style.set_full_screen(hwnd, target);
+                if left_mini_player {
+                    self.transmit_mini_player_change(false);
+                }
                 self.tray.tray_topmost.set_enabled(!saved_style.full_screen);
                 self.tray
                     .tray_topmost
@@ -841,6 +878,38 @@ impl MainWindow {
             }
         }
         self.transmit_window_visibility_change();
+    }
+    fn transmit_mini_player_change(&self, enabled: bool) {
+        if let Ok(web_channel) = self.webview.channel.try_borrow() {
+            if let Some((web_tx, _)) = web_channel.as_ref() {
+                web_tx.send(RPCResponse::pip_change(enabled)).ok();
+            }
+        }
+    }
+    fn on_mini_player_notice(&self) {
+        let Some(target) = self.requested_mini_player.lock().unwrap().take() else {
+            return;
+        };
+        let Some(hwnd) = self.window.handle.hwnd() else {
+            return;
+        };
+        let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() else {
+            return;
+        };
+        let left_full_screen = target && saved_style.full_screen;
+        if left_full_screen {
+            saved_style.set_full_screen(hwnd, false);
+        }
+        self.mini_player_active.set(target);
+        let enabled = saved_style.set_mini_player(hwnd, target);
+        self.mini_player_active.set(enabled);
+        self.tray.tray_topmost.set_enabled(!enabled);
+        drop(saved_style);
+        if left_full_screen {
+            self.transmit_window_visibility_change();
+        }
+        self.transmit_window_state_change();
+        self.transmit_mini_player_change(enabled);
     }
     fn on_set_interface_scale_notice(&self) {
         let scale = self.requested_interface_scale.lock().unwrap().take();
@@ -961,6 +1030,11 @@ impl MainWindow {
     fn on_quit(&self, data: &nwg::EventData) {
         if let nwg::EventData::OnWindowClose(data) = data {
             data.close(false);
+        }
+        if self.mini_player_active.get() {
+            *self.requested_mini_player.lock().unwrap() = Some(false);
+            self.on_mini_player_notice();
+            return;
         }
         self.save_window_settings();
         self.window.set_visible(false);
